@@ -42,10 +42,10 @@ MapSyncer Rebuild 是一个 Fabric 服务端/客户端双端 mod，用于把服�
 
 | 项目 | 版本 |
 | --- | --- |
-| Mod 版本 | `mapsyncer-rebuild-26.1.2-0.2` |
+| Mod 版本 | `mapsyncer-rebuild-26.1.2-0.3` |
 | Minecraft / Fabric | `26.1.2` |
-| Fabric Loader | `0.19.3` |
-| Fabric API | `0.151.0+26.1.2`（运行时 `>=0.145.4+26.1.2`） |
+| Fabric Loader | 推荐 `0.19.3`，运行时 `>=0.19.0` |
+| Fabric API | 推荐 `0.151.0+26.1.2`，运行时 `*` |
 | Fabric Loom | `1.16.3` |
 | Gradle Wrapper | `9.4.1` |
 | Java | `25` |
@@ -94,7 +94,7 @@ MapSyncer Rebuild 是一个 Fabric 服务端/客户端双端 mod，用于把服�
 
 ## 快速开始
 
-1. 将 `mapsyncer-rebuild-26.1.2-0.2.jar` 放入服务端 `mods/` 目录。
+1. 将 `mapsyncer-rebuild-26.1.2-0.3.jar` 放入服务端 `mods/` 目录。
 2. 将同一个 jar 放入客户端 `mods/` 目录。
 3. 确保服务端和客户端都安装了匹配版本的 Fabric Loader 与 Fabric API。
 4. 启动服务端，让 MapSyncer 自动生成默认配置文件。
@@ -396,7 +396,7 @@ mapsyncer-rebuild-<游戏版本号>-<发布序号>
 当前版本：
 
 ```text
-mapsyncer-rebuild-26.1.2-0.2
+mapsyncer-rebuild-26.1.2-0.3
 ```
 
 后续命名示例：
@@ -440,8 +440,8 @@ build/libs/
 当前规则下的主要产物：
 
 ```text
-build/libs/mapsyncer-rebuild-26.1.2-0.2.jar
-build/libs/mapsyncer-rebuild-26.1.2-0.2-sources.jar
+build/libs/mapsyncer-rebuild-26.1.2-0.3.jar
+build/libs/mapsyncer-rebuild-26.1.2-0.3-sources.jar
 ```
 
 ## 常见问题
