@@ -8,7 +8,7 @@ For installing and using it, read [README.md](README.md) first; for the licence,
 | Item | Value |
 | --- | --- |
 | Name | MapSyncer Rebuild for Xaero's World Map |
-| Version | `mapsyncer-rebuild-26.2-0.1` |
+| Version | `0.4.0` |
 | Mod ID / plugin name | `mapsyncer` / `MapSyncer` |
 | Minecraft | `26.2` |
 | Fabric Loader | `0.19.3` |
@@ -40,13 +40,13 @@ Put these in the server's `mods/` directory:
 
 - Fabric Loader
 - Fabric API
-- `mapsyncer-rebuild-26.2-0.1.jar`
+- `mapsyncer-rebuild-26.2-0.4.0-client.jar`
 
 ### Server (Paper)
 
 Put this in the server's `plugins/` directory:
 
-- `mapsyncer-rebuild-26.2-0.1-paper.jar`
+- `mapsyncer-rebuild-26.2-0.4.0-paper.jar`
 
 No Fabric Loader, no Fabric API, no other plugins.
 
@@ -59,7 +59,7 @@ Put these in the client's `mods/` directory:
 - Fabric Loader
 - Fabric API
 - Xaero's World Map
-- `mapsyncer-rebuild-26.2-0.1.jar`
+- `mapsyncer-rebuild-26.2-0.4.0-client.jar`
 
 For Voxy syncing, install and enable Voxy as well. Public waypoints need the client's Xaero waypoint support.
 
@@ -150,15 +150,15 @@ $env:Path="$env:JAVA_HOME\bin;$env:Path"
 The artifacts are:
 
 ```text
-build/libs/mapsyncer-rebuild-26.2-0.1.jar               # Fabric mod
-paper/build/libs/mapsyncer-rebuild-26.2-0.1-paper.jar   # Paper plugin
+build/libs/mapsyncer-rebuild-26.2-0.4.0-client.jar        # client, and Fabric servers
+paper/build/libs/mapsyncer-rebuild-26.2-0.4.0-paper.jar  # Paper plugin
 ```
 
 ## Getting help
 
 When reporting a problem, please include:
 
-- the version, e.g. `mapsyncer-rebuild-26.2-0.1`
+- the version, e.g. `0.4.0`, as shown in your launcher or by `/plugins`
 - the Minecraft version
 - whether the server is Fabric or Paper, and its version
 - for Fabric: the Fabric Loader and Fabric API versions

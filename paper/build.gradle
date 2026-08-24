@@ -7,7 +7,7 @@ version = project.mod_version
 group = project.maven_group
 
 base {
-	archivesName = "${project.mod_version}-paper"
+	archivesName = "mapsyncer-rebuild-${project.minecraft_version}-${project.mod_version}-paper"
 }
 
 tasks.withType(org.gradle.api.tasks.bundling.AbstractArchiveTask).configureEach {
@@ -42,7 +42,7 @@ sourceSets {
 
 processResources {
 	def props = [
-			version: project.mod_version.replace('mapsyncer-rebuild-', ''),
+			version: project.mod_version,
 			mod_id: project.mod_id,
 			mod_name: project.mod_name,
 			mod_description: project.mod_description,
@@ -53,6 +53,16 @@ processResources {
 
 	filesMatching('plugin.yml') {
 		expand props
+	}
+}
+
+tasks.named('jar') {
+	manifest {
+		attributes(
+				'Implementation-Title': project.mod_name,
+				'Implementation-Version': project.version,
+				'Specification-Version': project.minecraft_version
+		)
 	}
 }
 
