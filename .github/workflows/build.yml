@@ -1,0 +1,65 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - 'NOTICE'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - 'NOTICE'
+  workflow_dispatch:
+
+# A newer push to the same branch cancels an in-flight run.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build mod and plugin
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      # Caches ~/.gradle, which covers the Minecraft jars Loom downloads and the
+      # Paper development bundle paperweight fetches. The first run is slow; later
+      # ones reuse both.
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      # gradlew is committed without the executable bit.
+      - name: Make the Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      # Builds both: the Fabric mod at the root and the Paper plugin in :paper.
+      - name: Build
+        run: ./gradlew build --stacktrace
+
+      - name: Upload the Fabric mod
+        uses: actions/upload-artifact@v7
+        with:
+          name: fabric-mod
+          path: build/libs/*.jar
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload the Paper plugin
+        uses: actions/upload-artifact@v7
+        with:
+          name: paper-plugin
+          path: paper/build/libs/*.jar
+          if-no-files-found: error
+          retention-days: 14
