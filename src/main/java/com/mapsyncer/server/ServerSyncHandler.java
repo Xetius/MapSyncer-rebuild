@@ -28,6 +28,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -254,6 +255,25 @@ public class ServerSyncHandler {
     /** Per-player adaptive throttle state. */
     private static final Map<UUID, AdaptiveThrottleState> adaptiveThrottleStates = new ConcurrentHashMap<>();
 
+    /**
+     * Metadata chunks received from each player but not yet claimed by a request.
+     *
+     * <p>A client whose metadata does not fit one packet sends the surplus ahead of the
+     * request itself; see {@code PacketHandler.SyncMetaChunkPayload}. Entries live here only
+     * between the first chunk and the request that follows, and are dropped when the player
+     * disconnects.</p>
+     */
+    private static final Map<UUID, Map<String, ClientMeta>> pendingClientMeta = new ConcurrentHashMap<>();
+
+    /**
+     * Largest number of buffered entries accepted from one player.
+     *
+     * <p>The chunks arrive before the request that consumes them, so without a ceiling a
+     * client could stream them indefinitely and exhaust the server's heap. This is well
+     * above any real map: 200k regions is roughly 25 million chunks.</p>
+     */
+    private static final int MAX_PENDING_CLIENT_META = 200_000;
+
     /** Longest a throttle cycle may run (1 second), so the running total stays small. */
     private static final long MAX_SPEED_LIMIT_CYCLE_MS = 1000;
 
@@ -344,6 +364,10 @@ public class ServerSyncHandler {
                 PacketHandler.PublicWaypointAddResultPayload.TYPE,
                 PacketHandler.PublicWaypointAddResultPayload.STREAM_CODEC);
 
+        platform.registerServerbound(
+                PacketHandler.SyncMetaChunkPayload.TYPE,
+                PacketHandler.SyncMetaChunkPayload.STREAM_CODEC,
+                ServerSyncHandler::handleSyncMetaChunk);
         platform.registerServerbound(
                 PacketHandler.SyncRequestPayload.TYPE,
                 PacketHandler.SyncRequestPayload.STREAM_CODEC,
@@ -505,6 +529,7 @@ public class ServerSyncHandler {
     public static void onPlayerDisconnect(UUID playerId) {
         syncingPlayers.remove(playerId);
         playerSyncDimensions.remove(playerId);
+        pendingClientMeta.remove(playerId);
 
         // Drop their throttle state.
         clearSpeedLimitState(playerId);
@@ -830,6 +855,52 @@ public class ServerSyncHandler {
      * @param payload the sync request
      * @param serverPlayer the player that sent it
      */
+    /**
+     * Buffers one instalment of a client's metadata until its request arrives.
+     *
+     * @param payload      the chunk
+     * @param serverPlayer the player that sent it
+     */
+    private static void handleSyncMetaChunk(PacketHandler.SyncMetaChunkPayload payload,
+                                            ServerPlayer serverPlayer) {
+        UUID playerId = serverPlayer.getUUID();
+        Map<String, ClientMeta> pending =
+                pendingClientMeta.computeIfAbsent(playerId, id -> new ConcurrentHashMap<>());
+
+        if (pending.size() + payload.clientMeta().size() > MAX_PENDING_CLIENT_META) {
+            LOGGER.warn("Player {} sent more than {} buffered metadata entries, dropping them",
+                    serverPlayer.getName().getString(), MAX_PENDING_CLIENT_META);
+            pendingClientMeta.remove(playerId);
+            return;
+        }
+
+        pending.putAll(payload.clientMeta());
+    }
+
+    /**
+     * Combines a request's own metadata with whatever chunks preceded it.
+     *
+     * <p>Takes the buffer, so a request that never arrives cannot leave entries behind for
+     * the next one to pick up. The request's own entries win on conflict, being the newest.</p>
+     *
+     * @param playerId    the player
+     * @param requestMeta the metadata carried by the request itself
+     * @return every entry the client reported
+     */
+    private static Map<String, ClientMeta> takeClientMeta(UUID playerId,
+                                                          Map<String, ClientMeta> requestMeta) {
+        Map<String, ClientMeta> pending = pendingClientMeta.remove(playerId);
+        if (pending == null || pending.isEmpty()) {
+            return requestMeta;
+        }
+
+        Map<String, ClientMeta> combined = new HashMap<>(pending);
+        combined.putAll(requestMeta);
+        LOGGER.info("Assembled {} metadata entries for {} ({} from chunks, {} from the request)",
+                combined.size(), playerId, pending.size(), requestMeta.size());
+        return combined;
+    }
+
     private static void handleSyncRequest(PacketHandler.SyncRequestPayload payload, ServerPlayer serverPlayer) {
         sendPublicWaypoints(serverPlayer);
 
@@ -849,8 +920,9 @@ public class ServerSyncHandler {
         syncingPlayers.add(playerId);
         playerSyncDimensions.put(playerId, startDimension);
 
-        // Client metadata (timestamp + hash) - contains already received regions for resume
-        Map<String, ClientMeta> clientMeta = payload.clientMeta();
+        // Client metadata (timestamp + hash) - contains already received regions for resume,
+        // plus anything that arrived ahead of the request as its own chunks.
+        Map<String, ClientMeta> clientMeta = takeClientMeta(playerId, payload.clientMeta());
 
         // The expensive part runs off the server thread.
         Future<?> syncTask = MapSyncerExecutors.submitSync(() ->
@@ -877,6 +949,7 @@ public class ServerSyncHandler {
 
         SyncFilter filter = createRadiusFilter(serverPlayer, payload);
         if (filter == null) {
+            pendingClientMeta.remove(playerId);
             serverPlayer.level().getServer().execute(() -> {
                 Platform.send(serverPlayer,
                         new PacketHandler.SyncResponsePayload(List.of(), true, 0, "radius_disabled"));
@@ -890,8 +963,9 @@ public class ServerSyncHandler {
                 ChatUtils.message("mapsyncer.server.radius_start",
                         filter.radiusBlocks(), filter.centerDescription(), filter.clamped() ? " (clamped)" : "")));
 
+        Map<String, ClientMeta> clientMeta = takeClientMeta(playerId, payload.clientMeta());
         Future<?> syncTask = MapSyncerExecutors.submitSync(() ->
-                processSyncAsync(serverPlayer, playerId, payload.clientMeta(), startDimension, filter));
+                processSyncAsync(serverPlayer, playerId, clientMeta, startDimension, filter));
         syncTasks.put(playerId, syncTask);
         LOGGER.info("Started async radius sync task for player {}", serverPlayer.getName().getString());
     }

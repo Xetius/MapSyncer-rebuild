@@ -30,6 +30,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashSet;
+import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -420,7 +423,8 @@ public class MapSyncerCommand {
 
                     LOGGER.info("Sending sync request with {} entries (serverDir={})",
                             prepared.metaMap().size(), serverDir);
-                    ClientPlayNetworking.send(new PacketHandler.SyncRequestPayload(prepared.metaMap()));
+                    Map<String, ClientMeta> tail = sendMetaChunks(prepared.metaMap(), 0);
+                    ClientPlayNetworking.send(new PacketHandler.SyncRequestPayload(tail));
                     SyncProgressTracker.startTracking();
                 }))
                 .exceptionally(error -> {
@@ -450,14 +454,92 @@ public class MapSyncerCommand {
                     if (mc.player == null) {
                         return;
                     }
+                    // 512 covers the dimension ID and the four ints alongside the metadata.
+                    Map<String, ClientMeta> tail = sendMetaChunks(prepared.metaMap(), 512);
                     ClientPlayNetworking.send(new PacketHandler.RadiusSyncRequestPayload(
-                            prepared.metaMap(), dimensionId, radiusBlocks, playerX, playerY, playerZ));
+                            tail, dimensionId, radiusBlocks, playerX, playerY, playerZ));
                     SyncProgressTracker.startTracking();
                 }))
                 .exceptionally(error -> {
                     LOGGER.error("Failed to prepare radius sync request", error);
                     return null;
                 });
+    }
+
+    /**
+     * Sends whatever metadata will not fit in the request packet as separate chunks.
+     *
+     * <p>A serverbound custom payload may not exceed
+     * {@link PacketHandler#MAX_SERVERBOUND_PAYLOAD_BYTES}; a client with a large map has more
+     * metadata than that. Going over is not a soft failure — the server cannot decode the
+     * packet and closes the connection with
+     * {@code DecoderException: Failed to decode packet 'serverbound/minecraft:custom_payload'}
+     * — so the surplus goes ahead of the request as chunks and the server reassembles it.</p>
+     *
+     * @param metaMap      every entry to report
+     * @param reserveBytes bytes the request payload needs for its own fields
+     * @return the entries the caller should put in the request itself
+     */
+    private static Map<String, ClientMeta> sendMetaChunks(Map<String, ClientMeta> metaMap,
+                                                          int reserveBytes) {
+        int budget = PacketHandler.MAX_SERVERBOUND_PAYLOAD_BYTES - reserveBytes;
+        if (totalEncodedBytes(metaMap) <= budget) {
+            return metaMap;
+        }
+
+        if (!ClientPlayNetworking.canSend(PacketHandler.SyncMetaChunkPayload.TYPE)) {
+            // A server too old to know the chunk channel. Nothing can be done about the size,
+            // so report only what fits: the sync still works, it just resends more than it
+            // needs to. Better than a request the server disconnects us for.
+            Map<String, ClientMeta> trimmed = new HashMap<>();
+            int used = 0;
+            for (Map.Entry<String, ClientMeta> entry : metaMap.entrySet()) {
+                int size = PacketHandler.encodedEntryBytes(entry.getKey(), entry.getValue());
+                if (used + size > budget) {
+                    break;
+                }
+                trimmed.put(entry.getKey(), entry.getValue());
+                used += size;
+            }
+            LOGGER.warn("Server does not support metadata chunks; reporting {} of {} entries",
+                    trimmed.size(), metaMap.size());
+            return trimmed;
+        }
+
+        // Fill one batch at a time. Everything except the last batch goes out as a chunk;
+        // the last rides along with the request, which is what tells the server to start.
+        List<Map<String, ClientMeta>> batches = new ArrayList<>();
+        Map<String, ClientMeta> batch = new HashMap<>();
+        int used = 0;
+        for (Map.Entry<String, ClientMeta> entry : metaMap.entrySet()) {
+            int size = PacketHandler.encodedEntryBytes(entry.getKey(), entry.getValue());
+            if (used + size > budget && !batch.isEmpty()) {
+                batches.add(batch);
+                batch = new HashMap<>();
+                used = 0;
+            }
+            batch.put(entry.getKey(), entry.getValue());
+            used += size;
+        }
+        batches.add(batch);
+
+        for (int i = 0; i < batches.size() - 1; i++) {
+            ClientPlayNetworking.send(new PacketHandler.SyncMetaChunkPayload(batches.get(i)));
+        }
+        LOGGER.info("Split {} metadata entries into {} packets", metaMap.size(), batches.size());
+        return batches.get(batches.size() - 1);
+    }
+
+    /**
+     * @param metaMap the metadata
+     * @return how many bytes it occupies once encoded, including the entry count
+     */
+    private static int totalEncodedBytes(Map<String, ClientMeta> metaMap) {
+        int total = Integer.BYTES;
+        for (Map.Entry<String, ClientMeta> entry : metaMap.entrySet()) {
+            total += PacketHandler.encodedEntryBytes(entry.getKey(), entry.getValue());
+        }
+        return total;
     }
 
     private static PreparedSyncRequest prepareSyncRequest(Path serverDir, String dimensionId,

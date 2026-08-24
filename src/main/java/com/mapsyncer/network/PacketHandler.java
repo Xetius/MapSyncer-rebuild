@@ -50,6 +50,9 @@ public class PacketHandler {
             MapSyncer.MOD_ID, "sync_region_complete");
     public static final Identifier RADIUS_SYNC_REQUEST_ID = Identifier.fromNamespaceAndPath(
             MapSyncer.MOD_ID, "radius_sync_request");
+    /** Client to server: one instalment of the metadata for a request that is too big to fit one packet. */
+    public static final Identifier SYNC_META_CHUNK_ID = Identifier.fromNamespaceAndPath(
+            MapSyncer.MOD_ID, "sync_meta_chunk");
     public static final Identifier PUBLIC_WAYPOINTS_ID = Identifier.fromNamespaceAndPath(
             MapSyncer.MOD_ID, "public_waypoints");
     public static final Identifier PUBLIC_WAYPOINTS_REQUEST_ID = Identifier.fromNamespaceAndPath(
@@ -93,6 +96,132 @@ public class PacketHandler {
      *
      * @param clientMeta region path to the client's timestamp and hash for it
      */
+    /**
+     * Largest payload the client may send the server, in bytes.
+     *
+     * <p>A serverbound {@code minecraft:custom_payload} is capped at 32767 bytes by vanilla
+     * ({@code ServerboundCustomPayloadPacket.MAX_PAYLOAD_SIZE}), and at 32766 by Bukkit's
+     * {@code Messenger} on Paper. Exceeding it is not a soft failure: the receiving end
+     * cannot decode the packet and drops the connection. This leaves headroom below both
+     * for the channel ID and the packet framing around the payload.</p>
+     *
+     * <p>Note the asymmetry with the clientbound direction, which vanilla allows up to 1MB —
+     * see {@code MapSyncerPlatform#maxPayloadBytes()}.</p>
+     */
+    public static final int MAX_SERVERBOUND_PAYLOAD_BYTES = 28_000;
+
+    /**
+     * Bytes one metadata entry occupies once encoded.
+     *
+     * <p>Mirrors {@link #writeClientMeta}: a VarInt-prefixed path, a long, and a
+     * VarInt-prefixed hash.</p>
+     *
+     * @param path the region path
+     * @param meta the metadata for it
+     * @return the encoded size in bytes
+     */
+    public static int encodedEntryBytes(String path, ClientMeta meta) {
+        return utfBytes(path) + 8 + utfBytes(meta.hash());
+    }
+
+    private static int utfBytes(String value) {
+        int length = value.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        return varIntBytes(length) + length;
+    }
+
+    private static int varIntBytes(int value) {
+        int bytes = 1;
+        while ((value & 0xFFFFFF80) != 0) {
+            value >>>= 7;
+            bytes++;
+        }
+        return bytes;
+    }
+
+    /**
+     * Writes a metadata map.
+     *
+     * @param buf        the network buffer
+     * @param clientMeta the metadata to write
+     */
+    private static void writeClientMeta(RegistryFriendlyByteBuf buf, Map<String, ClientMeta> clientMeta) {
+        buf.writeInt(clientMeta.size());
+        for (var entry : clientMeta.entrySet()) {
+            buf.writeUtf(entry.getKey());
+            buf.writeLong(entry.getValue().timestampSeconds());
+            buf.writeUtf(entry.getValue().hash());
+        }
+    }
+
+    /**
+     * Reads a metadata map.
+     *
+     * @param buf  the network buffer
+     * @param what what is being read, for the error message
+     * @return the metadata
+     */
+    private static Map<String, ClientMeta> readClientMeta(RegistryFriendlyByteBuf buf, String what) {
+        int size = buf.readInt();
+        if (size < 0 || size > MAX_CLIENT_META_ENTRIES) {
+            throw new IllegalArgumentException("Invalid " + what + " metadata count: " + size);
+        }
+        Map<String, ClientMeta> metaMap = new HashMap<>();
+        for (int i = 0; i < size; i++) {
+            String path = buf.readUtf(MAX_PATH_LENGTH);
+            long timestampSeconds = buf.readLong();
+            String hash = buf.readUtf(MAX_HASH_LENGTH);
+            metaMap.put(path, new ClientMeta(timestampSeconds, hash));
+        }
+        return metaMap;
+    }
+
+    /**
+     * One instalment of the client metadata for a sync request.
+     *
+     * <p>A client with a large map has more metadata than
+     * {@link #MAX_SERVERBOUND_PAYLOAD_BYTES} allows in a single packet. It sends the
+     * surplus as these chunks first; the server holds them until the
+     * {@link SyncRequestPayload} or {@link RadiusSyncRequestPayload} that follows, and
+     * treats the whole lot as one request.</p>
+     */
+    public record SyncMetaChunkPayload(Map<String, ClientMeta> clientMeta) implements CustomPacketPayload {
+        /** The payload type. */
+        public static final Type<SyncMetaChunkPayload> TYPE = new Type<>(SYNC_META_CHUNK_ID);
+        /** Stream codec used to read and write this payload. */
+        public static final StreamCodec<RegistryFriendlyByteBuf, SyncMetaChunkPayload> STREAM_CODEC =
+                StreamCodec.of(SyncMetaChunkPayload::encode, SyncMetaChunkPayload::decode);
+
+        /**
+         * Writes a chunk to a network buffer.
+         *
+         * @param buf     the network buffer
+         * @param payload the chunk to write
+         */
+        public static void encode(RegistryFriendlyByteBuf buf, SyncMetaChunkPayload payload) {
+            writeClientMeta(buf, payload.clientMeta);
+        }
+
+        /**
+         * Reads a chunk from a network buffer.
+         *
+         * @param buf the network buffer
+         * @return the decoded chunk
+         */
+        public static SyncMetaChunkPayload decode(RegistryFriendlyByteBuf buf) {
+            return new SyncMetaChunkPayload(readClientMeta(buf, "sync metadata chunk"));
+        }
+
+        /**
+         * The payload type.
+         *
+         * @return the payload type
+         */
+        @Override
+        public Type<? extends CustomPacketPayload> type() {
+            return TYPE;
+        }
+    }
+
     public record SyncRequestPayload(Map<String, ClientMeta> clientMeta) implements CustomPacketPayload {
         /** The payload type. */
         public static final Type<SyncRequestPayload> TYPE = new Type<>(SYNC_REQUEST_ID);
@@ -108,12 +237,7 @@ public class PacketHandler {
          * @param payload the request to write
          */
         public static void encode(RegistryFriendlyByteBuf buf, SyncRequestPayload payload) {
-            buf.writeInt(payload.clientMeta.size());
-            for (var entry : payload.clientMeta.entrySet()) {
-                buf.writeUtf(entry.getKey());
-                buf.writeLong(entry.getValue().timestampSeconds());
-                buf.writeUtf(entry.getValue().hash());
-            }
+            writeClientMeta(buf, payload.clientMeta);
         }
 
         /**
@@ -123,18 +247,7 @@ public class PacketHandler {
          * @return the decoded request
          */
         public static SyncRequestPayload decode(RegistryFriendlyByteBuf buf) {
-            int size = buf.readInt();
-            if (size < 0 || size > MAX_CLIENT_META_ENTRIES) {
-                throw new IllegalArgumentException("Invalid sync metadata count: " + size);
-            }
-            Map<String, ClientMeta> metaMap = new HashMap<>();
-            for (int i = 0; i < size; i++) {
-                String path = buf.readUtf(MAX_PATH_LENGTH);
-                long timestampSeconds = buf.readLong();
-                String hash = buf.readUtf(MAX_HASH_LENGTH);
-                metaMap.put(path, new ClientMeta(timestampSeconds, hash));
-            }
-            return new SyncRequestPayload(metaMap);
+            return new SyncRequestPayload(readClientMeta(buf, "sync"));
         }
 
         /**
@@ -162,12 +275,7 @@ public class PacketHandler {
         );
 
         public static void encode(RegistryFriendlyByteBuf buf, RadiusSyncRequestPayload payload) {
-            buf.writeInt(payload.clientMeta.size());
-            for (var entry : payload.clientMeta.entrySet()) {
-                buf.writeUtf(entry.getKey());
-                buf.writeLong(entry.getValue().timestampSeconds());
-                buf.writeUtf(entry.getValue().hash());
-            }
+            writeClientMeta(buf, payload.clientMeta);
             buf.writeUtf(payload.dimensionId);
             buf.writeInt(payload.radiusBlocks);
             buf.writeInt(payload.playerX);
@@ -176,17 +284,7 @@ public class PacketHandler {
         }
 
         public static RadiusSyncRequestPayload decode(RegistryFriendlyByteBuf buf) {
-            int size = buf.readInt();
-            if (size < 0 || size > MAX_CLIENT_META_ENTRIES) {
-                throw new IllegalArgumentException("Invalid radius sync metadata count: " + size);
-            }
-            Map<String, ClientMeta> metaMap = new HashMap<>();
-            for (int i = 0; i < size; i++) {
-                String path = buf.readUtf(MAX_PATH_LENGTH);
-                long timestampSeconds = buf.readLong();
-                String hash = buf.readUtf(MAX_HASH_LENGTH);
-                metaMap.put(path, new ClientMeta(timestampSeconds, hash));
-            }
+            Map<String, ClientMeta> metaMap = readClientMeta(buf, "radius sync");
             return new RadiusSyncRequestPayload(
                     metaMap,
                     buf.readUtf(MAX_DIMENSION_LENGTH),

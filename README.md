@@ -51,8 +51,8 @@ This Rebuild focuses on:
 
 | Item | Version |
 | --- | --- |
-| Version | `0.6.1` |
-| Release jars | `mapsyncer-rebuild-26.2-0.6.1-client.jar`, `mapsyncer-rebuild-26.2-0.6.1-paper.jar` |
+| Version | `0.7.0` |
+| Release jars | `mapsyncer-rebuild-26.2-0.7.0-client.jar`, `mapsyncer-rebuild-26.2-0.7.0-paper.jar` |
 | Minecraft | `26.2` |
 | Fabric Loader | `0.19.3` recommended, `>=0.19.0` at runtime |
 | Fabric API | `0.158.0+26.2` recommended, `*` at runtime |
@@ -85,12 +85,12 @@ This Rebuild focuses on:
 
 - Fabric Loader
 - Fabric API
-- MapSyncer Rebuild (`mapsyncer-rebuild-26.2-0.6.1-client.jar`)
+- MapSyncer Rebuild (`mapsyncer-rebuild-26.2-0.7.0-client.jar`)
 
 ### Server (Paper)
 
 - Paper `26.2` (or a fork such as Purpur)
-- The MapSyncer Rebuild plugin (`mapsyncer-rebuild-26.2-0.6.1-paper.jar`)
+- The MapSyncer Rebuild plugin (`mapsyncer-rebuild-26.2-0.7.0-paper.jar`)
 
 The Paper build needs no Fabric Loader, no Fabric API, and no other plugins.
 
@@ -111,9 +111,9 @@ Optional:
 ## Getting started
 
 1. Install the server side, either way:
-   - Fabric server: put `mapsyncer-rebuild-26.2-0.6.1-client.jar` in `mods/`.
-   - Paper server: put `mapsyncer-rebuild-26.2-0.6.1-paper.jar` in `plugins/`.
-2. Put `mapsyncer-rebuild-26.2-0.6.1-client.jar` in the client's `mods/` directory. The client is always the Fabric mod.
+   - Fabric server: put `mapsyncer-rebuild-26.2-0.7.0-client.jar` in `mods/`.
+   - Paper server: put `mapsyncer-rebuild-26.2-0.7.0-paper.jar` in `plugins/`.
+2. Put `mapsyncer-rebuild-26.2-0.7.0-client.jar` in the client's `mods/` directory. The client is always the Fabric mod.
 3. The client needs matching Fabric Loader and Fabric API versions, as does a Fabric server. A Paper server needs neither.
 4. Start the server once, so MapSyncer writes its default config.
 5. As an op, run this first — the console can run it too, without the leading `/`:
@@ -441,7 +441,7 @@ With `enableDirtyRegionTracking` on, the server notes which regions changed and 
 The version and the file names are two different things, and only the version goes into
 the jar's metadata.
 
-`mod_version` in `gradle.properties` is a plain semantic version, currently `0.6.1`. It is
+`mod_version` in `gradle.properties` is a plain semantic version, currently `0.7.0`. It is
 what lands in `fabric.mod.json`, in `plugin.yml` and in each jar's `Implementation-Version`
 manifest attribute, so it is what Fabric Loader, Bukkit and launchers such as Prism display.
 It must stay valid SemVer: a name like `mapsyncer-rebuild-26.2-0.1` is not one, and a
@@ -495,9 +495,9 @@ On Linux or macOS:
 That builds both sides. The artifacts are:
 
 ```text
-build/libs/mapsyncer-rebuild-26.2-0.6.1-client.jar          # clients, and Fabric servers
-build/libs/mapsyncer-rebuild-26.2-0.6.1-client-sources.jar  # sources
-paper/build/libs/mapsyncer-rebuild-26.2-0.6.1-paper.jar     # Paper servers
+build/libs/mapsyncer-rebuild-26.2-0.7.0-client.jar          # clients, and Fabric servers
+build/libs/mapsyncer-rebuild-26.2-0.7.0-client-sources.jar  # sources
+paper/build/libs/mapsyncer-rebuild-26.2-0.7.0-paper.jar     # Paper servers
 ```
 
 To build only one side:
@@ -521,16 +521,16 @@ Two GitHub Actions workflows live in `.github/workflows/`:
 To cut a release, tag a commit and push the tag:
 
 ```bash
-git tag v0.6.1
-git push origin v0.6.1
+git tag v0.7.0
+git push origin v0.7.0
 ```
 
 The release then carries three assets plus a `checksums.txt` of their SHA-256 sums:
 
 ```text
-mapsyncer-rebuild-26.2-0.6.1-client.jar          # clients, and Fabric servers
-mapsyncer-rebuild-26.2-0.6.1-paper.jar           # Paper servers
-mapsyncer-rebuild-26.2-0.6.1-client-sources.jar  # sources
+mapsyncer-rebuild-26.2-0.7.0-client.jar          # clients, and Fabric servers
+mapsyncer-rebuild-26.2-0.7.0-paper.jar           # Paper servers
+mapsyncer-rebuild-26.2-0.7.0-client-sources.jar  # sources
 ```
 
 The release notes name the version from `gradle.properties` and say which file goes where, with GitHub's generated changelog appended. The build fails rather than publishing if either jar is missing.
