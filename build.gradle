@@ -6,12 +6,25 @@ plugins {
 version = project.mod_version
 group = project.maven_group
 
+// Release jars are mapsyncer-rebuild-<mc>-<version>-client.jar. The version lives in
+// the metadata rather than the file name, so archiveVersion is cleared below.
 base {
-	archivesName = project.mod_version
+	archivesName = "mapsyncer-rebuild-${project.minecraft_version}-${project.mod_version}-client"
 }
 
 tasks.withType(org.gradle.api.tasks.bundling.AbstractArchiveTask).configureEach {
 	archiveVersion = ""
+}
+
+// Loom's remapJar copies this manifest, so the version reaches the published jar.
+tasks.named('jar') {
+	manifest {
+		attributes(
+				'Implementation-Title': project.mod_name,
+				'Implementation-Version': project.version,
+				'Specification-Version': project.minecraft_version
+		)
+	}
 }
 
 tasks.withType(Jar).configureEach {

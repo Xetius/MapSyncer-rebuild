@@ -50,16 +50,32 @@ jobs:
       - name: Build
         run: ./gradlew clean build --stacktrace
 
-      # mod_version drives the jar names, so the release notes quote the same string
-      # players will see in their mods or plugins directory.
+      # The jars are named mapsyncer-rebuild-<mc>-<version>-{client,paper}.jar, built from
+      # these two properties, so the release notes can quote the exact file names.
       - name: Read the project version
         id: version
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           mod_version="$(grep -oP '^mod_version=\K.*' gradle.properties)"
           minecraft_version="$(grep -oP '^minecraft_version=\K.*' gradle.properties)"
-          echo "mod_version=${mod_version}" >> "$GITHUB_OUTPUT"
-          echo "minecraft_version=${minecraft_version}" >> "$GITHUB_OUTPUT"
-          echo "Building ${mod_version} for Minecraft ${minecraft_version}"
+          base="mapsyncer-rebuild-${minecraft_version}-${mod_version}"
+          {
+            echo "mod_version=${mod_version}"
+            echo "minecraft_version=${minecraft_version}"
+            echo "base=${base}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Building ${base} (mod version ${mod_version}, Minecraft ${minecraft_version})"
+
+          # The version inside the jars comes from gradle.properties, not from the tag.
+          # Warn rather than fail, so a release is never silently mislabelled. A tag
+          # naming part of the version counts, so v0.4 is fine for 0.4.0.
+          tag_version="${TAG#v}"
+          if [ "${mod_version}" = "${tag_version}" ] || [ "${mod_version#"${tag_version}".}" != "${mod_version}" ]; then
+            echo "Tag ${TAG} matches mod_version ${mod_version}"
+          else
+            echo "::warning::Tag ${TAG} does not match mod_version ${mod_version}. The jars and the launcher will show ${mod_version}; bump mod_version in gradle.properties if that is wrong."
+          fi
 
       # Collect the three jars in one directory, so the release assets are a flat list.
       - name: Collect the release assets
@@ -76,10 +92,10 @@ jobs:
       # A build that produced only one side would otherwise publish a half-empty release.
       - name: Check both jars are present
         env:
-          VERSION: ${{ steps.version.outputs.mod_version }}
+          BASE: ${{ steps.version.outputs.base }}
         run: |
-          test -f "release/${VERSION}.jar" || { echo "::error::Fabric mod jar is missing"; exit 1; }
-          test -f "release/${VERSION}-paper.jar" || { echo "::error::Paper plugin jar is missing"; exit 1; }
+          test -f "release/${BASE}-client.jar" || { echo "::error::Client jar ${BASE}-client.jar is missing"; exit 1; }
+          test -f "release/${BASE}-paper.jar" || { echo "::error::Paper plugin jar ${BASE}-paper.jar is missing"; exit 1; }
 
       - name: Publish the release
         uses: softprops/action-gh-release@v3
@@ -100,9 +116,9 @@ jobs:
 
             | File | Goes in | For |
             | --- | --- | --- |
-            | `${{ steps.version.outputs.mod_version }}.jar` | `mods/` | Every client, and Fabric servers |
-            | `${{ steps.version.outputs.mod_version }}-paper.jar` | `plugins/` | Paper servers, and forks such as Purpur |
-            | `${{ steps.version.outputs.mod_version }}-sources.jar` | — | Sources, for development |
+            | `${{ steps.version.outputs.base }}-client.jar` | `mods/` | Every client, and Fabric servers |
+            | `${{ steps.version.outputs.base }}-paper.jar` | `plugins/` | Paper servers, and forks such as Purpur |
+            | `${{ steps.version.outputs.base }}-client-sources.jar` | — | Sources, for development |
 
             Every player needs the Fabric mod in `mods/`. The server needs **one** of the
             other two: the same Fabric mod in `mods/` on a Fabric server, or the Paper
