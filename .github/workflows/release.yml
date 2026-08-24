@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to publish, e.g. v0.4. Created at the current commit if it does not exist.'
+        description: 'Tag to publish, e.g. v0.6.0. Created at the current commit if it does not exist.'
         required: true
       draft:
         description: 'Publish as a draft, so it can be reviewed before going public'
@@ -69,7 +69,7 @@ jobs:
 
           # The version inside the jars comes from gradle.properties, not from the tag.
           # Warn rather than fail, so a release is never silently mislabelled. A tag
-          # naming part of the version counts, so v0.4 is fine for 0.4.0.
+          # naming part of the version counts, so v0.6 is fine for 0.6.0.
           tag_version="${TAG#v}"
           if [ "${mod_version}" = "${tag_version}" ] || [ "${mod_version#"${tag_version}".}" != "${mod_version}" ]; then
             echo "Tag ${TAG} matches mod_version ${mod_version}"
