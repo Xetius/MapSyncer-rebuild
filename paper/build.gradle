@@ -1,0 +1,77 @@
+plugins {
+	id 'java'
+	id 'io.papermc.paperweight.userdev' version "${paperweight_version}"
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+	archivesName = "${project.mod_version}-paper"
+}
+
+tasks.withType(org.gradle.api.tasks.bundling.AbstractArchiveTask).configureEach {
+	archiveVersion = ""
+}
+
+repositories {
+	mavenCentral()
+	maven {
+		name = 'PaperMC'
+		url = 'https://repo.papermc.io/repository/maven-public/'
+	}
+}
+
+dependencies {
+	paperweight.paperDevBundle(project.paper_dev_bundle)
+}
+
+// The server logic is the same source tree as the Fabric mod; only the
+// loader-specific parts are excluded:
+//   com/mapsyncer/fabric  - Fabric entrypoint and platform implementation
+//   com/mapsyncer/mixin   - Paper has no mixins; dirty-region tracking uses Bukkit events
+sourceSets {
+	main {
+		java {
+			srcDir "${rootProject.projectDir}/src/main/java"
+			exclude 'com/mapsyncer/fabric/**'
+			exclude 'com/mapsyncer/mixin/**'
+		}
+	}
+}
+
+processResources {
+	def props = [
+			version: project.mod_version.replace('mapsyncer-rebuild-', ''),
+			mod_id: project.mod_id,
+			mod_name: project.mod_name,
+			mod_description: project.mod_description,
+			mod_authors: project.mod_authors,
+			paper_api_version: project.paper_api_version
+	]
+	inputs.properties props
+
+	filesMatching('plugin.yml') {
+		expand props
+	}
+}
+
+tasks.withType(Jar).configureEach {
+	from("${rootProject.projectDir}/LICENSE") {
+		rename { "${it}_${project.mod_id}" }
+	}
+	from("${rootProject.projectDir}/NOTICE") {
+		rename { "${it}_${project.mod_id}" }
+	}
+}
+
+java {
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(25)
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	options.encoding = 'UTF-8'
+	options.release = 25
+}

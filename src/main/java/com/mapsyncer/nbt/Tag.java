@@ -4,26 +4,26 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * NBT标签类型定义 - 零依赖实现
+ * The NBT tag types. No dependencies.
  *
- * <p>定义了所有Minecraft NBT（Named Binary Tag）格式中使用的标签类型。
- * 使用Java 17的sealed interface确保类型安全。</p>
+ * <p>Every tag type Minecraft's NBT format uses, as a sealed interface so the compiler
+ * can check exhaustiveness.</p>
  *
- * <p>支持的标签类型：</p>
+ * <p>The types:</p>
  * <ul>
- *   <li>{@link End} - 结束标记，用于标记Compound的结束</li>
- *   <li>{@link Byte} - 8位有符号整数</li>
- *   <li>{@link Short} - 16位有符号整数</li>
- *   <li>{@link Int} - 32位有符号整数</li>
- *   <li>{@link Long} - 64位有符号整数</li>
- *   <li>{@link Float} - 32位IEEE 754浮点数</li>
- *   <li>{@link Double} - 64位IEEE 754浮点数</li>
- *   <li>{@link ByteArray} - 字节数组</li>
- *   <li>{@link StringTag} - UTF-8字符串</li>
- *   <li>{@link ListTag} - 同类型标签列表</li>
- *   <li>{@link Compound} - 键值对集合</li>
- *   <li>{@link IntArray} - 整数数组</li>
- *   <li>{@link LongArray} - 长整数数组</li>
+ *   <li>{@link End} - marks the end of a compound</li>
+ *   <li>{@link Byte} - signed 8-bit integer</li>
+ *   <li>{@link Short} - signed 16-bit integer</li>
+ *   <li>{@link Int} - signed 32-bit integer</li>
+ *   <li>{@link Long} - signed 64-bit integer</li>
+ *   <li>{@link Float} - 32-bit IEEE 754 float</li>
+ *   <li>{@link Double} - 64-bit IEEE 754 double</li>
+ *   <li>{@link ByteArray} - byte array</li>
+ *   <li>{@link StringTag} - UTF-8 string</li>
+ *   <li>{@link ListTag} - list of tags, all the same type</li>
+ *   <li>{@link Compound} - map of name to tag</li>
+ *   <li>{@link IntArray} - int array</li>
+ *   <li>{@link LongArray} - long array</li>
  * </ul>
  *
  * @see NbtReader
@@ -44,56 +44,56 @@ public sealed interface Tag permits
     Tag.LongArray {
 
     /**
-     * 获取NBT标签类型ID
+     * This tag's type ID.
      *
-     * @return 标签类型ID（0-12）
+     * @return the type ID, 0-12
      */
     byte typeId();
 
     /**
-     * 获取标签名称
+     * This tag's name.
      *
-     * <p>根Compound通常为空字符串。</p>
+     * <p>Usually empty for the root compound.</p>
      *
-     * @return 标签名称
+     * @return the tag name
      */
     String name();
 
-    // ========== 标签类型常量 ==========
+    // ========== Type IDs ==========
 
-    /** 结束标记类型ID - 用于标记Compound的结束 */
+    /** End marker, which closes a compound. */
     byte TAG_END = 0;
-    /** 字节类型ID - 8位有符号整数 */
+    /** Byte: signed 8-bit integer. */
     byte TAG_BYTE = 1;
-    /** 短整型类型ID - 16位有符号整数 */
+    /** Short: signed 16-bit integer. */
     byte TAG_SHORT = 2;
-    /** 整型类型ID - 32位有符号整数 */
+    /** Int: signed 32-bit integer. */
     byte TAG_INT = 3;
-    /** 长整型类型ID - 64位有符号整数 */
+    /** Long: signed 64-bit integer. */
     byte TAG_LONG = 4;
-    /** 单精度浮点类型ID - 32位IEEE 754浮点数 */
+    /** Float: 32-bit IEEE 754. */
     byte TAG_FLOAT = 5;
-    /** 双精度浮点类型ID - 64位IEEE 754浮点数 */
+    /** Double: 64-bit IEEE 754. */
     byte TAG_DOUBLE = 6;
-    /** 字节数组类型ID */
+    /** Byte array. */
     byte TAG_BYTE_ARRAY = 7;
-    /** 字符串类型ID - UTF-8编码 */
+    /** String, UTF-8 encoded. */
     byte TAG_STRING = 8;
-    /** 列表类型ID - 同类型元素集合 */
+    /** List of tags, all the same type. */
     byte TAG_LIST = 9;
-    /** 复合类型ID - 键值对集合 */
+    /** Compound: a map of name to tag. */
     byte TAG_COMPOUND = 10;
-    /** 整数数组类型ID */
+    /** Int array. */
     byte TAG_INT_ARRAY = 11;
-    /** 长整数数组类型ID */
+    /** Long array. */
     byte TAG_LONG_ARRAY = 12;
 
-    // ========== 具体Tag实现 ==========
+    // ========== The tags themselves ==========
 
     /**
-     * TAG_End - Compound结束标记
+     * TAG_End: closes a compound.
      *
-     * <p>用于标记Compound标签的结束，不包含实际数据。</p>
+     * <p>Carries no data.</p>
      */
     record End() implements Tag {
         @Override public byte typeId() { return TAG_END; }
@@ -101,134 +101,133 @@ public sealed interface Tag permits
     }
 
     /**
-     * TAG_Byte - 8位有符号整数
+     * TAG_Byte: signed 8-bit integer.
      *
-     * @param name  标签名称
-     * @param value 字节值（-128到127）
+     * @param name  the tag name
+     * @param value the value, -128 to 127
      */
     record Byte(String name, byte value) implements Tag {
         @Override public byte typeId() { return TAG_BYTE; }
     }
 
     /**
-     * TAG_Short - 16位有符号整数
+     * TAG_Short: signed 16-bit integer.
      *
-     * @param name  标签名称
-     * @param value 短整型值（-32768到32767）
+     * @param name  the tag name
+     * @param value the value, -32768 to 32767
      */
     record Short(String name, short value) implements Tag {
         @Override public byte typeId() { return TAG_SHORT; }
     }
 
     /**
-     * TAG_Int - 32位有符号整数
+     * TAG_Int: signed 32-bit integer.
      *
-     * @param name  标签名称
-     * @param value 整型值
+     * @param name  the tag name
+     * @param value the value
      */
     record Int(String name, int value) implements Tag {
         @Override public byte typeId() { return TAG_INT; }
     }
 
     /**
-     * TAG_Long - 64位有符号整数
+     * TAG_Long: signed 64-bit integer.
      *
-     * @param name  标签名称
-     * @param value 长整型值
+     * @param name  the tag name
+     * @param value the value
      */
     record Long(String name, long value) implements Tag {
         @Override public byte typeId() { return TAG_LONG; }
     }
 
     /**
-     * TAG_Float - 32位IEEE 754浮点数
+     * TAG_Float: 32-bit IEEE 754.
      *
-     * @param name  标签名称
-     * @param value 单精度浮点值
+     * @param name  the tag name
+     * @param value the value
      */
     record Float(String name, float value) implements Tag {
         @Override public byte typeId() { return TAG_FLOAT; }
     }
 
     /**
-     * TAG_Double - 64位IEEE 754浮点数
+     * TAG_Double: 64-bit IEEE 754.
      *
-     * @param name  标签名称
-     * @param value 双精度浮点值
+     * @param name  the tag name
+     * @param value the value
      */
     record Double(String name, double value) implements Tag {
         @Override public byte typeId() { return TAG_DOUBLE; }
     }
 
     /**
-     * TAG_Byte_Array - 字节数组
+     * TAG_Byte_Array.
      *
-     * @param name  标签名称
-     * @param value 字节数组
+     * @param name  the tag name
+     * @param value the bytes
      */
     record ByteArray(String name, byte[] value) implements Tag {
         @Override public byte typeId() { return TAG_BYTE_ARRAY; }
     }
 
     /**
-     * TAG_String - UTF-8字符串
+     * TAG_String: UTF-8.
      *
-     * @param name  标签名称
-     * @param value 字符串内容
+     * @param name  the tag name
+     * @param value the string
      */
     record StringTag(String name, String value) implements Tag {
         @Override public byte typeId() { return TAG_STRING; }
     }
 
     /**
-     * TAG_List - 同类型标签列表
+     * TAG_List: a list of tags, all the same type.
      *
-     * <p>List中的所有元素必须是相同的类型。元素没有独立的名称。</p>
+     * <p>Every element shares one type, and elements have no names of their own.</p>
      *
-     * @param name        标签名称
-     * @param elementType 列表元素的类型ID
-     * @param items       标签元素列表
+     * @param name        the tag name
+     * @param elementType the type ID of the elements
+     * @param items       the elements
      */
     record ListTag(String name, byte elementType, List<Tag> items) implements Tag {
         @Override public byte typeId() { return TAG_LIST; }
     }
 
     /**
-     * TAG_Compound - 键值对集合
+     * TAG_Compound: a map of name to tag.
      *
-     * <p>Compound是最常用的NBT类型，类似于Map结构。
-     * 每个子标签都有一个唯一的名称作为键。</p>
+     * <p>The workhorse of NBT. Each child tag has a unique name, which is its key.</p>
      *
-     * @param name     标签名称
-     * @param children 子标签映射，键为标签名称
+     * @param name     the tag name
+     * @param children the child tags, keyed by name
      */
     record Compound(String name, Map<String, Tag> children) implements Tag {
         @Override public byte typeId() { return TAG_COMPOUND; }
 
-        // ========== 快捷访问方法 ==========
+        // ========== Convenience accessors ==========
 
         /**
-         * 获取指定键的标签
+         * The tag stored under a key.
          *
-         * @param key 键名
-         * @return 标签对象，不存在则返回null
+         * @param key the key
+         * @return the tag, or {@code null} if there is none
          */
         public Tag get(String key) { return children.get(key); }
 
         /**
-         * 检查是否包含指定键
+         * Whether a key is present.
          *
-         * @param key 键名
-         * @return 如果包含则返回true
+         * @param key the key
+         * @return {@code true} if present
          */
         public boolean contains(String key) { return children.containsKey(key); }
 
         /**
-         * 检查是否包含指定键且类型匹配
+         * Whether a key is present and holds the expected type.
          *
-         * @param key     键名
-         * @param typeId  期望的类型ID
-         * @return 如果包含且类型匹配则返回true
+         * @param key     the key
+         * @param typeId  the expected type ID
+         * @return {@code true} if present and of that type
          */
         public boolean contains(String key, byte typeId) {
             Tag t = children.get(key);
@@ -236,10 +235,10 @@ public sealed interface Tag permits
         }
 
         /**
-         * 获取Byte值
+         * A byte value.
          *
-         * @param key 键名
-         * @return Byte值，不存在或类型不匹配则返回0
+         * @param key the key
+         * @return the value, or 0 if it is missing or of another type
          */
         public byte getByte(String key) {
             Tag t = children.get(key);
@@ -247,10 +246,10 @@ public sealed interface Tag permits
         }
 
         /**
-         * 获取Short值
+         * A short value.
          *
-         * @param key 键名
-         * @return Short值，不存在或类型不匹配则返回0
+         * @param key the key
+         * @return the value, or 0 if it is missing or of another type
          */
         public short getShort(String key) {
             Tag t = children.get(key);
@@ -258,10 +257,10 @@ public sealed interface Tag permits
         }
 
         /**
-         * 获取Int值
+         * An int value.
          *
-         * @param key 键名
-         * @return Int值，不存在或类型不匹配则返回0
+         * @param key the key
+         * @return the value, or 0 if it is missing or of another type
          */
         public int getInt(String key) {
             Tag t = children.get(key);
@@ -269,10 +268,10 @@ public sealed interface Tag permits
         }
 
         /**
-         * 获取Long值
+         * A long value.
          *
-         * @param key 键名
-         * @return Long值，不存在或类型不匹配则返回0
+         * @param key the key
+         * @return the value, or 0 if it is missing or of another type
          */
         public long getLong(String key) {
             Tag t = children.get(key);
@@ -280,10 +279,10 @@ public sealed interface Tag permits
         }
 
         /**
-         * 获取String值
+         * A string value.
          *
-         * @param key 键名
-         * @return String值，不存在或类型不匹配则返回空字符串
+         * @param key the key
+         * @return the value, or an empty string if it is missing or of another type
          */
         public String getString(String key) {
             Tag t = children.get(key);
@@ -291,10 +290,10 @@ public sealed interface Tag permits
         }
 
         /**
-         * 获取Compound子标签
+         * A child compound.
          *
-         * @param key 键名
-         * @return Compound对象，不存在或类型不匹配则返回空Compound
+         * @param key the key
+         * @return the compound, or an empty one if it is missing or of another type
          */
         public Compound getCompound(String key) {
             Tag t = children.get(key);
@@ -302,11 +301,11 @@ public sealed interface Tag permits
         }
 
         /**
-         * 获取List子标签
+         * A child list.
          *
-         * @param key          键名
-         * @param expectedType 期望的元素类型ID
-         * @return ListTag对象，不存在或类型不匹配则返回空ListTag
+         * @param key          the key
+         * @param expectedType the expected element type ID
+         * @return the list, or an empty one if it is missing or of another type
          */
         public ListTag getList(String key, byte expectedType) {
             Tag t = children.get(key);
@@ -314,10 +313,10 @@ public sealed interface Tag permits
         }
 
         /**
-         * 获取ByteArray值
+         * A byte array value.
          *
-         * @param key 键名
-         * @return 字节数组，不存在或类型不匹配则返回空数组
+         * @param key the key
+         * @return the array, or an empty one if it is missing or of another type
          */
         public byte[] getByteArray(String key) {
             Tag t = children.get(key);
@@ -325,10 +324,10 @@ public sealed interface Tag permits
         }
 
         /**
-         * 获取IntArray值
+         * An int array value.
          *
-         * @param key 键名
-         * @return 整数数组，不存在或类型不匹配则返回空数组
+         * @param key the key
+         * @return the array, or an empty one if it is missing or of another type
          */
         public int[] getIntArray(String key) {
             Tag t = children.get(key);
@@ -336,10 +335,10 @@ public sealed interface Tag permits
         }
 
         /**
-         * 获取LongArray值
+         * A long array value.
          *
-         * @param key 键名
-         * @return 长整数数组，不存在或类型不匹配则返回空数组
+         * @param key the key
+         * @return the array, or an empty one if it is missing or of another type
          */
         public long[] getLongArray(String key) {
             Tag t = children.get(key);
@@ -348,20 +347,20 @@ public sealed interface Tag permits
     }
 
     /**
-     * TAG_Int_Array - 整数数组
+     * TAG_Int_Array.
      *
-     * @param name  标签名称
-     * @param value 整数数组
+     * @param name  the tag name
+     * @param value the ints
      */
     record IntArray(String name, int[] value) implements Tag {
         @Override public byte typeId() { return TAG_INT_ARRAY; }
     }
 
     /**
-     * TAG_Long_Array - 长整数数组
+     * TAG_Long_Array.
      *
-     * @param name  标签名称
-     * @param value 长整数数组
+     * @param name  the tag name
+     * @param value the longs
      */
     record LongArray(String name, long[] value) implements Tag {
         @Override public byte typeId() { return TAG_LONG_ARRAY; }

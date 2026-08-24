@@ -2,7 +2,8 @@ package com.mapsyncer;
 
 import com.mapsyncer.config.ModConfig;
 import com.mapsyncer.config.ModConfig.UpdateMode;
-import com.mapsyncer.server.CacheGenerateCommand;
+import com.mapsyncer.platform.MapSyncerPlatform;
+import com.mapsyncer.platform.Platform;
 import com.mapsyncer.server.DimensionRegistry;
 import com.mapsyncer.server.DirtyRegionTracker;
 import com.mapsyncer.server.IncrementalUpdateHandler;
@@ -10,26 +11,45 @@ import com.mapsyncer.server.PlayerJoinHandler;
 import com.mapsyncer.server.PublicWaypointConfig;
 import com.mapsyncer.server.ServerSyncHandler;
 import com.mapsyncer.server.VoxySyncHandler;
-import net.fabricmc.api.ModInitializer;
-import net.fabricmc.loader.api.FabricLoader;
-import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
-import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
-import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
-import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
+import net.minecraft.server.MinecraftServer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class MapSyncer implements ModInitializer {
+/**
+ * MapSyncer's server-side core, independent of the loader it runs on.
+ *
+ * <p>Called by whichever entrypoint is present:</p>
+ * <ul>
+ *   <li>Fabric: {@code com.mapsyncer.fabric.MapSyncerFabric}</li>
+ *   <li>Paper: {@code com.mapsyncer.paper.MapSyncerPlugin}</li>
+ * </ul>
+ *
+ * <p>The entrypoint installs a {@link MapSyncerPlatform} and forwards its loader's
+ * lifecycle events to the {@code onServerXxx} methods below. Everything the server
+ * actually does is shared between the two.</p>
+ */
+public final class MapSyncer {
+
+    /** Mod / plugin ID, and the namespace of every network channel. */
     public static final String MOD_ID = "mapsyncer";
-    public static String VERSION = "unknown";
+
+    /** Shared logger. */
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
-    @Override
-    public void onInitialize() {
-        VERSION = FabricLoader.getInstance()
-                .getModContainer(MOD_ID)
-                .map(container -> container.getMetadata().getVersion().getFriendlyString())
-                .orElse("unknown");
+    /** Current version, read from the platform by {@link #bootstrap(MapSyncerPlatform)}. */
+    public static String VERSION = "unknown";
+
+    private MapSyncer() {
+    }
+
+    /**
+     * Starts the server core: installs the platform, loads config, registers packets.
+     *
+     * @param platform the implementation for this loader
+     */
+    public static void bootstrap(MapSyncerPlatform platform) {
+        Platform.set(platform);
+        VERSION = platform.version();
 
         ModConfig.load();
         PublicWaypointConfig.load();
@@ -37,37 +57,50 @@ public class MapSyncer implements ModInitializer {
         VoxySyncHandler.register();
         VoxySyncHandler.logSecurityWarningIfEnabled();
 
-        CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) ->
-                CacheGenerateCommand.register(dispatcher));
+        LOGGER.info("MapSyncer {} initialized for {}", VERSION, platform.name());
+    }
 
-        ServerLifecycleEvents.SERVER_STARTED.register(server -> {
-            DimensionRegistry.registerAllDimensions(server);
+    /**
+     * Server finished starting: register dimensions and start incremental updates if enabled.
+     *
+     * @param server the server
+     */
+    public static void onServerStarted(MinecraftServer server) {
+        DimensionRegistry.registerAllDimensions(server);
 
-            UpdateMode mode = ModConfig.SERVER.incrementalUpdateMode;
-            if (mode != UpdateMode.DISABLED) {
-                IncrementalUpdateHandler.getInstance().start(server);
-            }
-        });
+        UpdateMode mode = ModConfig.SERVER.incrementalUpdateMode;
+        if (mode != UpdateMode.DISABLED) {
+            IncrementalUpdateHandler.getInstance().start(server);
+        }
+    }
 
-        ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
-            IncrementalUpdateHandler.getInstance().stop();
-            VoxySyncHandler.cleanup();
-            DirtyRegionTracker.clear();
-        });
+    /**
+     * Server is shutting down: stop incremental updates and Voxy syncing.
+     *
+     * @param server the server
+     */
+    public static void onServerStopping(MinecraftServer server) {
+        IncrementalUpdateHandler.getInstance().stop();
+        VoxySyncHandler.cleanup();
+        DirtyRegionTracker.clear();
+    }
 
-        ServerLifecycleEvents.SERVER_STOPPED.register(PlayerJoinHandler::onServerStopped);
+    /**
+     * Server has stopped: release every cached singleton.
+     *
+     * @param server the server
+     */
+    public static void onServerStopped(MinecraftServer server) {
+        PlayerJoinHandler.onServerStopped(server);
+    }
 
-        ServerTickEvents.END_SERVER_TICK.register(server -> {
-            IncrementalUpdateHandler.onServerTick(server);
-            PlayerJoinHandler.onServerTick(server);
-        });
-
-        ServerPlayConnectionEvents.JOIN.register((handler, sender, server) ->
-                PlayerJoinHandler.onPlayerJoin(handler.player));
-
-        ServerPlayConnectionEvents.DISCONNECT.register((handler, server) ->
-                PlayerJoinHandler.onPlayerLeave(handler.player));
-
-        LOGGER.info("MapSyncer initialized for Fabric");
+    /**
+     * Server tick: drives incremental updates and cleanup of stale per-player state.
+     *
+     * @param server the server
+     */
+    public static void onServerTick(MinecraftServer server) {
+        IncrementalUpdateHandler.onServerTick(server);
+        PlayerJoinHandler.onServerTick(server);
     }
 }

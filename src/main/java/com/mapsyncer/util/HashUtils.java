@@ -10,28 +10,29 @@ import java.nio.file.Path;
 import java.util.zip.CRC32;
 
 /**
- * 哈希计算工具类
+ * CRC32 hashing helpers.
  *
- * 统一的CRC32哈希计算方法，合并 ClientHashManager 和 GenerationCache 中的重复实现
+ * Shared by ClientHashManager and GenerationCache, which previously each had their own copy.
  */
 public final class HashUtils {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(HashUtils.class);
 
-    /** 文件不存在或读取失败时返回的默认哈希值 */
+    /** Returned when a file is missing or cannot be read. */
     public static final String DEFAULT_HASH = "00000000";
 
     private HashUtils() {
-        // 工具类不允许实例化
+        // Utility class; not instantiable.
     }
 
     /**
-     * 计算文件的CRC32哈希值（流式读取，避免内存峰值）
+     * CRC32 of a file, read in chunks so large files do not spike memory.
      *
-     * <p>使用8KB固定缓冲区逐块读取文件，避免Files.readAllBytes导致的内存峰值。</p>
+     * <p>Uses a fixed 8KB buffer rather than {@code Files.readAllBytes}.</p>
      *
-     * @param filePath 文件路径
-     * @return CRC32哈希值（8位十六进制字符串），文件不存在或读取失败返回 "00000000"
+     * @param filePath the file to hash
+     * @return the CRC32 as eight hex characters, or {@code "00000000"} if the file is
+     *         missing or unreadable
      */
     public static String computeFileHash(Path filePath) {
         if (filePath == null || !Files.exists(filePath)) {
@@ -39,7 +40,7 @@ public final class HashUtils {
         }
 
         CRC32 crc32 = new CRC32();
-        byte[] buffer = new byte[8192];  // 8KB 固定缓冲区
+        byte[] buffer = new byte[8192];  // fixed 8KB buffer
 
         try (InputStream is = Files.newInputStream(filePath)) {
             int len;
@@ -54,10 +55,10 @@ public final class HashUtils {
     }
 
     /**
-     * 计算字节数组的CRC32哈希值
+     * CRC32 of a byte array.
      *
-     * @param data 字节数组
-     * @return CRC32哈希值（8位十六进制字符串）
+     * @param data the bytes to hash
+     * @return the CRC32 as eight hex characters
      */
     public static String computeHash(byte[] data) {
         if (data == null || data.length == 0) {
@@ -70,10 +71,10 @@ public final class HashUtils {
     }
 
     /**
-     * 检查哈希值是否有效（非默认值）
+     * Whether a hash is a real hash rather than the missing-file placeholder.
      *
-     * @param hash 哈希值
-     * @return true 如果哈希值有效
+     * @param hash the hash to check
+     * @return {@code true} if the hash is usable
      */
     public static boolean isValidHash(String hash) {
         return hash != null && !hash.isEmpty() && !DEFAULT_HASH.equals(hash);

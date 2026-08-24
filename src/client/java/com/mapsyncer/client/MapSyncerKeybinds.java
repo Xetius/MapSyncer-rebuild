@@ -21,8 +21,8 @@ final class MapSyncerKeybinds {
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             while (openGui.consumeClick()) {
-                if (client.screen == null) {
-                    client.setScreen(new MapSyncerScreen());
+                if (client.gui.screen() == null) {
+                    client.setScreenAndShow(new MapSyncerScreen());
                 }
             }
         });

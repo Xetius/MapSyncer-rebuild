@@ -1,0 +1,118 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish, e.g. v0.4. Created at the current commit if it does not exist.'
+        required: true
+      draft:
+        description: 'Publish as a draft, so it can be reviewed before going public'
+        type: boolean
+        default: false
+
+# Needed to create the release and upload its assets.
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      # gradlew is committed without the executable bit.
+      - name: Make the Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      # Builds both: the Fabric mod at the root and the Paper plugin in :paper.
+      - name: Build
+        run: ./gradlew clean build --stacktrace
+
+      # mod_version drives the jar names, so the release notes quote the same string
+      # players will see in their mods or plugins directory.
+      - name: Read the project version
+        id: version
+        run: |
+          mod_version="$(grep -oP '^mod_version=\K.*' gradle.properties)"
+          minecraft_version="$(grep -oP '^minecraft_version=\K.*' gradle.properties)"
+          echo "mod_version=${mod_version}" >> "$GITHUB_OUTPUT"
+          echo "minecraft_version=${minecraft_version}" >> "$GITHUB_OUTPUT"
+          echo "Building ${mod_version} for Minecraft ${minecraft_version}"
+
+      # Collect the three jars in one directory, so the release assets are a flat list.
+      - name: Collect the release assets
+        run: |
+          mkdir -p release
+          cp build/libs/*.jar release/
+          cp paper/build/libs/*.jar release/
+          cd release
+          sha256sum *.jar > checksums.txt
+          echo "--- release assets ---"
+          ls -l
+          cat checksums.txt
+
+      # A build that produced only one side would otherwise publish a half-empty release.
+      - name: Check both jars are present
+        env:
+          VERSION: ${{ steps.version.outputs.mod_version }}
+        run: |
+          test -f "release/${VERSION}.jar" || { echo "::error::Fabric mod jar is missing"; exit 1; }
+          test -f "release/${VERSION}-paper.jar" || { echo "::error::Paper plugin jar is missing"; exit 1; }
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          target_commitish: ${{ github.sha }}
+          name: MapSyncer Rebuild ${{ inputs.tag || github.ref_name }}
+          draft: ${{ inputs.draft || false }}
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          files: |
+            release/*.jar
+            release/checksums.txt
+          body: |
+            MapSyncer Rebuild `${{ steps.version.outputs.mod_version }}` for Minecraft `${{ steps.version.outputs.minecraft_version }}`.
+
+            ### Which file do I need?
+
+            | File | Goes in | For |
+            | --- | --- | --- |
+            | `${{ steps.version.outputs.mod_version }}.jar` | `mods/` | Every client, and Fabric servers |
+            | `${{ steps.version.outputs.mod_version }}-paper.jar` | `plugins/` | Paper servers, and forks such as Purpur |
+            | `${{ steps.version.outputs.mod_version }}-sources.jar` | — | Sources, for development |
+
+            Every player needs the Fabric mod in `mods/`. The server needs **one** of the
+            other two: the same Fabric mod in `mods/` on a Fabric server, or the Paper
+            plugin in `plugins/` on a Paper server. Both speak the same protocol, so the
+            client does not care which one it connects to.
+
+            Clients also need Fabric Loader, Fabric API and Xaero's World Map. The Paper
+            plugin needs neither Fabric nor any other plugin.
+
+            `checksums.txt` holds the SHA-256 of each jar.
+
+            See the [README](https://github.com/${{ github.repository }}/blob/${{ inputs.tag || github.ref_name }}/README.md)
+            for setup, commands and configuration.

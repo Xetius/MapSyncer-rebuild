@@ -1,116 +1,116 @@
 package com.mapsyncer.mca;
 
 /**
- * 光照模式枚举
+ * How lighting is worked out when rendering a region.
  *
- * <p>定义两种光照计算模式，模拟 Xaero WorldMap 的光照处理逻辑:</p>
+ * <p>Two modes, mirroring how Xaero's World Map handles light:</p>
  *
- * <p>地表模式 (SURFACE):</p>
+ * <p>SURFACE:</p>
  * <ul>
- *   <li>只使用 BlockLight（方块光照）</li>
- *   <li>SkyLight 完全忽略</li>
- *   <li>适用于普通地表地图渲染</li>
- *   <li>洞穴、地下室等区域显示较暗</li>
+ *   <li>uses block light only</li>
+ *   <li>sky light is ignored entirely</li>
+ *   <li>suits ordinary surface maps</li>
+ *   <li>caves and basements come out dark</li>
  * </ul>
  *
- * <p>洞穴模式 (CAVE):</p>
+ * <p>CAVE:</p>
  * <ul>
- *   <li>同时使用 BlockLight 和 SkyLight</li>
- *   <li>取两者的最大值作为有效光照</li>
- *   <li>当方块光照 < 15 且有 SkyLight 时，考虑天空光照</li>
- *   <li>高于高度图的位置 SkyLight = 15（直接日照）</li>
- *   <li>模拟洞穴中透过水面看到阳光的效果</li>
+ *   <li>uses both block light and sky light</li>
+ *   <li>takes whichever is brighter</li>
+ *   <li>consults sky light when block light is below 15 and the dimension has a sky</li>
+ *   <li>anything above the heightmap gets sky light 15, i.e. direct daylight</li>
+ *   <li>which is what makes daylight visible through water from inside a cave</li>
  * </ul>
  *
- * @see DimensionTypeInfo 用于确定维度的天空光照属性
- * @see ChunkSectionParser.LightData 用于解析光照数据
+ * @see DimensionTypeInfo for whether a dimension has sky light at all
+ * @see ChunkSectionParser.LightData for where the light values come from
  */
 public enum LightMode {
 
     /**
-     * 地表模式 - 只使用 BlockLight
+     * Surface mode: block light only.
      *
-     * <p>光照计算规则：</p>
+     * <p>Rules:</p>
      * <ul>
-     *   <li>lightLevels = BlockLight 值</li>
-     *   <li>SkyLight 完全忽略</li>
-     *   <li>发光方块强制 light = 15</li>
+     *   <li>light level is the block light value</li>
+     *   <li>sky light is ignored entirely</li>
+     *   <li>light-emitting blocks are forced to 15</li>
      * </ul>
      *
-     * <p>适用场景：普通地表地图</p>
+     * <p>Used for ordinary surface maps.</p>
      */
     SURFACE,
 
     /**
-     * 洞穴模式 - 取 BlockLight 和 SkyLight 的最大值
+     * Cave mode: the brighter of block light and sky light.
      *
-     * <p>光照计算规则（参考 Xaero WorldDataReader:537-561）:</p>
+     * <p>Rules, following Xaero's WorldDataReader:537-561:</p>
      * <ul>
-     *   <li>默认 lightLevels = 0, skyLightLevels = 15（有天空的维度）</li>
-     *   <li>当 BlockLight < 15 且有 SkyLight 时，记录 SkyLight</li>
-     *   <li>最终光照 = max(BlockLight, SkyLight)</li>
-     *   <li>高于高度图位置 SkyLight = 15</li>
-     *   <li>无 overlay 且 SkyLight > BlockLight 时使用 SkyLight</li>
+     *   <li>starts at light 0, sky light 15 in dimensions that have a sky</li>
+     *   <li>records sky light when block light is below 15 and sky light exists</li>
+     *   <li>final value is max(block light, sky light)</li>
+     *   <li>anything above the heightmap gets sky light 15</li>
+     *   <li>uses sky light where there is no overlay and sky light is brighter</li>
      * </ul>
      *
-     * <p>适用场景：洞穴地图、地下水查看</p>
+     * <p>Used for cave maps and for seeing underwater.</p>
      */
     CAVE;
 
     /**
-     * 计算有效光照值
+     * Works out the light level to render with.
      *
-     * <p>参考 Xaero WorldDataReader.java 光照处理逻辑:</p>
+     * <p>Follows the lighting in Xaero's WorldDataReader.java:</p>
      * <ul>
-     *   <li>第186行：worldHasSkylight = serverWorld.dimensionType().hasSkyLight()</li>
-     *   <li>第353行：skyLightLevels[i] = worldHasSkylight ? 15 : 0</li>
-     *   <li>第557-559行：cave && dataLight < 15 && worldHasSkylight 时更新 skyLightLevels</li>
+     *   <li>line 186: worldHasSkylight = serverWorld.dimensionType().hasSkyLight()</li>
+     *   <li>line 353: skyLightLevels[i] = worldHasSkylight ? 15 : 0</li>
+     *   <li>lines 557-559: in cave mode, update sky light when dataLight < 15 and the world has sky light</li>
      * </ul>
      *
-     * <p>末地维度特性：</p>
+     * <p>The end is the odd one out:</p>
      * <ul>
-     *   <li>worldHasSkylight = false（末地没有天空光照）</li>
-     *   <li>skyLightLevels 初始化为 0（而不是 15）</li>
-     *   <li>不会在光照计算中使用 skyLight = 15 作为默认值</li>
+     *   <li>worldHasSkylight is false, since the end has no sky light</li>
+     *   <li>sky light starts at 0 rather than 15</li>
+     *   <li>so sky light 15 is never used as a default there</li>
      * </ul>
      *
-     * @param blockLight 方块光照值 (0-15)
-     * @param skyLight 天空光照值 (0-15)
-     * @param hasSkyAccess 是否有天空访问（位置高于高度图）
-     * @param hasOverlay 是否有覆盖层（水、玻璃等透明方块）
-     * @param isGlowing 是否为发光方块
-     * @param worldHasSkylight 维度是否有天空光照（末地为 false）
-     * @return 有效光照值 (0-15)
+     * @param blockLight block light, 0-15
+     * @param skyLight sky light, 0-15
+     * @param hasSkyAccess whether this position is above the heightmap
+     * @param hasOverlay whether something transparent (water, glass) covers it
+     * @param isGlowing whether the block emits light
+     * @param worldHasSkylight whether the dimension has sky light (false in the end)
+     * @return the light level to render with, 0-15
      */
     public byte calculateEffectiveLight(byte blockLight, byte skyLight,
                                          boolean hasSkyAccess, boolean hasOverlay,
                                          boolean isGlowing, boolean worldHasSkylight) {
-        // 发光方块强制光照15
+        // Light-emitting blocks are always fully lit.
         if (isGlowing) {
             return 15;
         }
 
         switch (this) {
             case SURFACE:
-                // 地表模式：只使用 BlockLight
+                // Surface mode: block light only.
                 return blockLight;
 
             case CAVE:
-                // 洞穴模式：取 max(BlockLight, SkyLight)
+                // Cave mode: the brighter of the two.
                 if (blockLight >= 15) {
                     return blockLight;
                 }
 
-                // 参考 Xaero: 只有在有天空光照的维度，有天空访问时才使用 SkyLight = 15
-                // 末地维度 worldHasSkylight = false，所以不会使用 15
+                // As Xaero does it: sky light 15 only where the dimension has a sky
+                // and the position is exposed. The end has no sky light, so never here.
                 byte effectiveSkyLight = (hasSkyAccess && worldHasSkylight) ? 15 : skyLight;
 
-                // 无 overlay 且 SkyLight 更亮时使用 SkyLight
+                // No overlay and sky light is brighter, so use sky light.
                 if (!hasOverlay && effectiveSkyLight > blockLight) {
                     return effectiveSkyLight;
                 }
 
-                // 否则返回 BlockLight（水下等场景）
+                // Otherwise block light, which is the underwater case.
                 return blockLight;
 
             default:
@@ -119,21 +119,21 @@ public enum LightMode {
     }
 
     /**
-     * 获取默认 SkyLight 值
+     * The sky light value to start from.
      *
-     * <p>根据光照模式和维度属性返回默认的天空光照值:</p>
+     * <p>Depends on the mode and the dimension:</p>
      * <ul>
-     *   <li>地表模式: 返回 0（不使用 SkyLight）</li>
-     *   <li>洞穴模式: 如果维度有天空光照返回 15，否则返回 0</li>
+     *   <li>surface mode: 0, since sky light is unused</li>
+     *   <li>cave mode: 15 where the dimension has sky light, otherwise 0</li>
      * </ul>
      *
-     * @param worldHasSkylight 世界是否有天空光照
-     * @return 默认 SkyLight 值（0 或 15）
+     * @param worldHasSkylight whether the dimension has sky light
+     * @return the starting sky light value, 0 or 15
      */
     public byte getDefaultSkyLight(boolean worldHasSkylight) {
         switch (this) {
             case SURFACE:
-                return (byte) 0;  // 地表模式不使用 SkyLight
+                return (byte) 0;  // surface mode ignores sky light
             case CAVE:
                 return worldHasSkylight ? (byte) 15 : (byte) 0;
             default:
@@ -142,11 +142,11 @@ public enum LightMode {
     }
 
     /**
-     * 判断是否需要 SkyLight 数据
+     * Whether this mode needs sky light data at all.
      *
-     * <p>只有洞穴模式需要 SkyLight 数据进行光照计算</p>
+     * <p>Only cave mode does.</p>
      *
-     * @return 如果需要 SkyLight 数据则返回 true
+     * @return {@code true} if sky light data is required
      */
     public boolean needsSkyLightData() {
         return this == CAVE;

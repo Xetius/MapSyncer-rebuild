@@ -10,90 +10,90 @@ import java.util.zip.GZIPInputStream;
 import java.util.zip.InflaterInputStream;
 
 /**
- * MCA文件读取器 - 零依赖实现
- * 解析Minecraft区域文件格式(.mca)
+ * Reads Minecraft region files (.mca). No dependencies.
  *
- * <p>MCA文件结构:</p>
+ *
+ * <p>File layout:</p>
  * <ul>
- *   <li>0-4KB: 位置表 (32x32 chunk位置，每个4字节)</li>
- *   <li>4-8KB: 时间戳表 (32x32 chunk时间戳，每个4字节)</li>
- *   <li>8KB+:  chunk数据扇区 (每扇区4KB)</li>
+ *   <li>0-4KB: location table, 32x32 chunk entries of 4 bytes each</li>
+ *   <li>4-8KB: timestamp table, 32x32 chunk entries of 4 bytes each</li>
+ *   <li>8KB onwards: chunk data, in 4KB sectors</li>
  * </ul>
  *
- * <p>支持的压缩类型:</p>
+ * <p>Supported compression:</p>
  * <ul>
- *   <li>GZIP (类型1)</li>
- *   <li>ZLIB (类型2)</li>
- *   <li>无压缩 (类型3)</li>
+ *   <li>GZIP (type 1)</li>
+ *   <li>ZLIB (type 2)</li>
+ *   <li>uncompressed (type 3)</li>
  * </ul>
  *
- * <p>注意：LZ4压缩类型(4)暂不支持，需要额外依赖库</p>
+ * <p>LZ4 (type 4) is not supported; it would need another dependency.</p>
  *
- * @see ChunkDataParser 用于解析chunk的NBT数据
- * @see McaReader.ChunkLocation chunk位置信息记录
- * @see McaReader.ChunkData chunk数据记录
+ * @see ChunkDataParser which parses a chunk's NBT
+ * @see McaReader.ChunkLocation where a chunk lives in the file
+ * @see McaReader.ChunkData one chunk's data
  */
 public class McaReader implements AutoCloseable {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(McaReader.class);
     /**
-     * 扇区大小常量（4KB）
+     * Sector size: 4KB.
      */
     private static final int SECTOR_SIZE = 4096;
 
     /**
-     * 每个区域的chunk数量（32x32）
+     * Chunks per region: 32x32.
      */
     private static final int CHUNKS_PER_REGION = 32;
 
     private static final int MAX_CHUNK_DATA_LENGTH = 4 * 1024 * 1024;
     private static final int MAX_DECOMPRESSED_NBT_LENGTH = 16 * 1024 * 1024;
 
-    // 压缩类型常量
+    // Compression types
     /**
-     * GZIP压缩类型标识
+     * GZIP compression.
      */
     private static final int COMPRESS_GZIP = 1;
 
     /**
-     * ZLIB压缩类型标识
+     * ZLIB compression.
      */
     private static final int COMPRESS_ZLIB = 2;
 
     /**
-     * 无压缩类型标识
+     * No compression.
      */
     private static final int COMPRESS_NONE = 3;
 
     /**
-     * LZ4压缩类型标识（暂不支持）
+     * LZ4 compression, which is not supported.
      */
     private static final int COMPRESS_LZ4 = 4;
 
     /**
-     * Chunk位置信息记录
+     * Where a chunk lives in the file.
      *
-     * <p>包含chunk在MCA文件中的位置和元数据:</p>
+     * <p>Its position plus metadata:</p>
      * <ul>
-     *   <li>offsetSectors: 数据起始位置的扇区偏移量</li>
-     *   <li>sectorCount: 数据占用的扇区数量</li>
-     *   <li>timestamp: chunk的最后修改时间戳</li>
+     *   <li>offsetSectors: sector the data starts at</li>
+     *   <li>sectorCount: how many sectors it occupies</li>
+     *   <li>timestamp: when the chunk was last modified</li>
      * </ul>
      */
     public record ChunkLocation(int offsetSectors, int sectorCount, int timestamp) {
         /**
-         * 判断chunk是否存在
+         * Whether the chunk is present at all.
          *
-         * @return 如果offsetSectors和sectorCount都大于0则返回true，否则返回false
+         * @return {@code true} if both offsetSectors and sectorCount are above zero
          */
         public boolean exists() {
             return offsetSectors > 0 && sectorCount > 0;
         }
 
         /**
-         * 计算chunk数据的字节偏移量
+         * The chunk's byte offset in the file.
          *
-         * @return 数据在文件中的绝对字节偏移量（offsetSectors * SECTOR_SIZE）
+         * @return offsetSectors * SECTOR_SIZE
          */
         public long dataOffset() {
             return (long) offsetSectors * SECTOR_SIZE;
@@ -101,41 +101,41 @@ public class McaReader implements AutoCloseable {
     }
 
     /**
-     * Chunk数据记录
+     * One chunk's data.
      *
-     * @param chunkX chunk在region内的局部X坐标 (0-31)
-     * @param chunkZ chunk在region内的局部Z坐标 (0-31)
-     * @param nbt chunk的NBT数据（Tag.Compound格式）
+     * @param chunkX chunk X within the region, 0-31
+     * @param chunkZ chunk Z within the region, 0-31
+     * @param nbt the chunk's NBT
      */
     public record ChunkData(int chunkX, int chunkZ, Tag.Compound nbt) {}
 
     /**
-     * 随机访问文件对象，用于读取MCA文件
+     * The open region file.
      */
     private final RandomAccessFile raf;
 
     /**
-     * 打开MCA文件并初始化读取器
+     * Opens a region file.
      *
-     * @param path MCA文件的完整路径
-     * @throws IOException 如果文件不存在、文件太小或无法读取
+     * @param path the .mca file
+     * @throws IOException if the file is missing, too small, or unreadable
      */
     public McaReader(String path) throws IOException {
         this.raf = new RandomAccessFile(path, "r");
         if (raf.length() < SECTOR_SIZE * 2) {
-            throw new IOException("MCA文件太小: " + raf.length() + " bytes");
+            throw new IOException("MCA file too small: " + raf.length() + " bytes");
         }
     }
 
     /**
-     * 获取chunk在MCA文件中的位置信息
+     * Where a chunk lives in the file.
      *
-     * <p>从位置表和时间戳表读取chunk的元数据</p>
+     * <p>Read from the location and timestamp tables.</p>
      *
-     * @param localX chunk在region内的局部X坐标 (0-31)
-     * @param localZ chunk在region内的局部Z坐标 (0-31)
-     * @return ChunkLocation对象，包含偏移量、扇区数和时间戳
-     * @throws IOException 如果读取文件失败
+     * @param localX chunk X within the region, 0-31
+     * @param localZ chunk Z within the region, 0-31
+     * @return its offset, sector count and timestamp
+     * @throws IOException if the file cannot be read
      */
     public ChunkLocation getChunkLocation(int localX, int localZ) throws IOException {
         int index = (localX + localZ * CHUNKS_PER_REGION) * 4;
@@ -147,7 +147,7 @@ public class McaReader implements AutoCloseable {
         int offsetSectors = (b0 << 16) | (b1 << 8) | b2;
         int sectorCount = raf.readUnsignedByte();
 
-        // 读取时间戳
+        // The timestamp table.
         raf.seek(SECTOR_SIZE + index);
         int timestamp = raf.readInt();
 
@@ -155,20 +155,20 @@ public class McaReader implements AutoCloseable {
     }
 
     /**
-     * 读取单个chunk的NBT数据
+     * Reads one chunk's NBT.
      *
-     * <p>处理流程:</p>
+     * <p>The steps:</p>
      * <ol>
-     *   <li>获取chunk位置信息</li>
-     *   <li>读取压缩的数据长度和压缩类型</li>
-     *   <li>解压缩数据</li>
-     *   <li>解析NBT格式</li>
+     *   <li>find where the chunk lives</li>
+     *   <li>read its compressed length and compression type</li>
+     *   <li>decompress it</li>
+     *   <li>parse the NBT</li>
      * </ol>
      *
-     * @param localX chunk在region内的局部X坐标 (0-31)
-     * @param localZ chunk在region内的局部Z坐标 (0-31)
-     * @return chunk的NBT数据（Tag.Compound格式），如果chunk不存在或读取失败则返回null
-     * @throws IOException 如果读取或解压缩失败
+     * @param localX chunk X within the region, 0-31
+     * @param localZ chunk Z within the region, 0-31
+     * @return the chunk's NBT, or {@code null} if it is absent or unreadable
+     * @throws IOException if reading or decompression fails
      */
     public Tag.Compound readChunkNbt(int localX, int localZ) throws IOException {
         ChunkLocation loc = getChunkLocation(localX, localZ);
@@ -183,7 +183,7 @@ public class McaReader implements AutoCloseable {
 
         raf.seek(dataOffset);
 
-        // 读取chunk数据长度（包含压缩类型字节）
+        // Data length, which includes the compression type byte.
         int totalLength = raf.readInt();
         if (totalLength <= 1) {
             return null;
@@ -192,10 +192,10 @@ public class McaReader implements AutoCloseable {
             throw new IOException("Chunk data length too large: " + totalLength + " bytes");
         }
 
-        // 读取压缩类型
+        // The compression type.
         int compressionType = raf.readUnsignedByte();
 
-        // 读取压缩数据
+        // The compressed data.
         int dataLength = totalLength - 1;
         byte[] compressedData = new byte[dataLength];
         int read = 0;
@@ -208,26 +208,26 @@ public class McaReader implements AutoCloseable {
             return null;
         }
 
-        // 解压缩
+        // Decompress.
         byte[] nbtData = decompress(compressedData, compressionType);
         if (nbtData == null) {
             return null;
         }
 
-        // 解析NBT
+        // And parse.
         try (NbtReader reader = new NbtReader(new ByteArrayInputStream(nbtData))) {
             return reader.readDocument();
         }
     }
 
     /**
-     * 读取区域文件中所有存在的chunk
+     * Reads every chunk present in the region.
      *
-     * <p>遍历32x32的所有chunk位置，读取每个存在的chunk数据</p>
-     * <p>单个chunk读取失败不会中断整体读取过程，会记录警告日志</p>
+     * <p>Walks all 32x32 slots and reads whichever chunks are there.</p>
+     * <p>A chunk that fails to read is logged and skipped rather than aborting the lot.</p>
      *
-     * @return 包含所有成功读取的ChunkData对象的列表
-     * @throws IOException 如果打开或读取文件失败
+     * @return every chunk that could be read
+     * @throws IOException if the file cannot be opened or read
      */
     public Iterable<ChunkData> readAllChunks() throws IOException {
         java.util.List<ChunkData> chunks = new java.util.ArrayList<>();
@@ -240,8 +240,8 @@ public class McaReader implements AutoCloseable {
                         chunks.add(new ChunkData(localX, localZ, nbt));
                     }
                 } catch (IOException e) {
-                    // 单个chunk失败不中断整体读取
-                    LOGGER.warn("读取chunk ({}, {}) 失败: {}", localX, localZ, e.getMessage());
+                    // One bad chunk does not abort the rest.
+                    LOGGER.warn("Failed to read chunk ({}, {}): {}", localX, localZ, e.getMessage());
                 }
             }
         }
@@ -258,29 +258,29 @@ public class McaReader implements AutoCloseable {
                         consumer.accept(new ChunkData(localX, localZ, nbt));
                     }
                 } catch (IOException | RuntimeException e) {
-                    LOGGER.warn("读取chunk ({}, {}) 失败: {}", localX, localZ, e.getMessage());
+                    LOGGER.warn("Failed to read chunk ({}, {}): {}", localX, localZ, e.getMessage());
                 } catch (OutOfMemoryError e) {
-                    LOGGER.error("读取chunk ({}, {}) 内存不足，已跳过该chunk", localX, localZ);
+                    LOGGER.error("Out of memory reading chunk ({}, {}); skipped it", localX, localZ);
                 }
             }
         }
     }
 
     /**
-     * 解压缩chunk数据
+     * Decompresses chunk data.
      *
-     * <p>根据压缩类型选择相应的解压缩方法:</p>
+     * <p>By compression type:</p>
      * <ul>
-     *   <li>GZIP (1): 使用GZIPInputStream解压</li>
-     *   <li>ZLIB (2): 使用InflaterInputStream解压</li>
-     *   <li>无压缩 (3): 直接返回原始数据</li>
-     *   <li>LZ4 (4): 暂不支持，抛出异常</li>
+     *   <li>GZIP (1): GZIPInputStream</li>
+     *   <li>ZLIB (2): InflaterInputStream</li>
+     *   <li>uncompressed (3): returned as-is</li>
+     *   <li>LZ4 (4): unsupported, throws</li>
      * </ul>
      *
-     * @param data 压缩的数据字节数组
-     * @param compressionType 压缩类型标识 (1-4)
-     * @return 解压缩后的NBT数据字节数组
-     * @throws IOException 如果解压缩失败或压缩类型不支持
+     * @param data the compressed bytes
+     * @param compressionType the compression type, 1-4
+     * @return the decompressed NBT bytes
+     * @throws IOException if decompression fails or the type is unsupported
      */
     private byte[] decompress(byte[] data, int compressionType) throws IOException {
         ByteArrayInputStream bais = new ByteArrayInputStream(data);
@@ -314,11 +314,11 @@ public class McaReader implements AutoCloseable {
                 return data;
 
             case COMPRESS_LZ4:
-                // LZ4压缩需要额外依赖，暂不支持
-                throw new IOException("LZ4压缩暂不支持，请使用GZIP或ZLIB压缩的region文件");
+                // LZ4 would need another dependency.
+                throw new IOException("LZ4 compression is not supported; use GZIP or ZLIB region files");
 
             default:
-                throw new IOException("未知压缩类型: " + compressionType);
+                throw new IOException("Unknown compression type: " + compressionType);
         }
     }
 
@@ -334,11 +334,11 @@ public class McaReader implements AutoCloseable {
     }
 
     /**
-     * 关闭MCA文件读取器
+     * Closes the region file.
      *
-     * <p>释放文件资源，实现AutoCloseable接口以支持try-with-resources语法</p>
+     * <p>Implements AutoCloseable, so this works with try-with-resources.</p>
      *
-     * @throws IOException 如果关闭文件失败
+     * @throws IOException if closing fails
      */
     @Override
     public void close() throws IOException {

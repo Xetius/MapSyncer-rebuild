@@ -34,66 +34,66 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Stream;
 
 /**
- * 转换协调器 - 协调区域转换流水线：扫描 → 转换 → 写入
+ * Drives the conversion pipeline: scan, convert, write.
  *
- * 支持三种转换模式：
- * - 全量转换：转换所有维度的所有区域
- * - 单维度转换：转换指定维度的所有区域
- * - 单区域转换：转换指定维度的单个区域
+ * Three ways in:
+ * - everything: every region of every dimension
+ * - one dimension: every region of that dimension
+ * - one region: a single region of one dimension
  *
- * 使用时间戳缓存检测需要更新的区域，避免重复处理未变化的文件。
- * 支持增量更新，仅处理时间戳变化的MCA文件。
+ * Timestamp caching decides what actually needs converting, so unchanged files are not
+ * processed twice. Incremental runs only touch MCA files whose timestamps moved.
  */
 public class ConversionOrchestrator {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ConversionOrchestrator.class);
 
-    /** 是否正在运行转换任务 */
+    /** Whether a conversion is in progress. */
     private static volatile boolean isRunning = false;
     private static final AtomicBoolean RUN_LOCK = new AtomicBoolean(false);
 
-    /** 已处理的区域数量 */
+    /** Regions handled so far. */
     private static volatile int processedCount = 0;
 
-    /** 跳过的区域数量（时间戳未变化） */
+    /** Regions skipped because their timestamp had not moved. */
     private static volatile int skippedCount = 0;
 
-    /** 总区域数量 */
+    /** Regions in total. */
     private static volatile int totalCount = 0;
 
-    /** 当前状态描述 */
+    /** What the conversion is doing right now. */
     private static volatile String currentStatus = "idle";
 
-    /** 当前正在处理的维度 */
+    /** The dimension being converted. */
     private static volatile ResourceKey<Level> currentDimension = null;
 
-    /** 已完成的维度列表（用于全量生成完成提示） */
+    /** Dimensions finished so far, for the "generation complete" message. */
     private static volatile List<String> completedDimensions = new ArrayList<>();
 
-    /** 缓存输出目录 */
+    /** Where the generated cache is written. */
     public static final Path CACHE_DIR = Path.of("server_map_cache");
 
-    /** 时间戳缓存实例 */
+    /** The MCA timestamp cache. */
     private static McaTimestampCache timestampCache;
 
     /**
-     * 单区域生成结果状态
+     * Outcome of converting a single region.
      */
     public enum SingleRegionResult {
-        /** 成功 */
+        /** Converted. */
         SUCCESS,
-        /** 区域未找到 */
+        /** No such region. */
         REGION_NOT_FOUND,
-        /** 转换失败 */
+        /** Conversion failed. */
         CONVERSION_FAILED,
-        /** 已有任务运行 */
+        /** Another conversion is already running. */
         ALREADY_RUNNING
     }
 
     /**
-     * 清除维度缓存目录
+     * Empties a dimension's cache directory.
      *
-     * @param dimCacheDir 维度缓存目录路径
+     * @param dimCacheDir the dimension's cache directory
      */
     private static void clearDimensionCache(Path dimCacheDir) {
         if (!Files.exists(dimCacheDir)) {
@@ -102,9 +102,9 @@ public class ConversionOrchestrator {
         }
 
         try {
-            // 递归删除目录中的所有文件和子目录
+            // Delete the contents recursively.
             Files.walk(dimCacheDir)
-                    .sorted((a, b) -> -a.compareTo(b)) // 先删除文件再删除目录
+                    .sorted((a, b) -> -a.compareTo(b)) // files before their directories
                     .forEach(path -> {
                         try {
                             Files.deleteIfExists(path);
@@ -120,9 +120,9 @@ public class ConversionOrchestrator {
     }
 
     /**
-     * 获取或初始化时间戳缓存
+     * The timestamp cache, creating it on first use.
      *
-     * @return MCA时间戳缓存实例
+     * @return the MCA timestamp cache
      */
     private static McaTimestampCache getTimestampCache() {
         if (timestampCache == null) {
@@ -146,9 +146,9 @@ public class ConversionOrchestrator {
     }
 
     /**
-     * 执行全量转换 - 转换服务器所有维度的所有区域
+     * Converts every region of every dimension.
      *
-     * @param server Minecraft服务器实例
+     * @param server the running server
      */
     public static void generateAll(MinecraftServer server) {
         if (!tryStartRun()) {
@@ -156,7 +156,7 @@ public class ConversionOrchestrator {
         }
         processedCount = 0;
         skippedCount = 0;
-        completedDimensions = new ArrayList<>();  // 重置已完成维度列表
+        completedDimensions = new ArrayList<>();  // start a fresh list
 
         // Step 1: Force save all chunks to disk before reading .mca files
         if (!saveAllChunks(server)) {
@@ -186,12 +186,12 @@ public class ConversionOrchestrator {
     }
 
     /**
-     * 执行单维度转换 - 转换指定维度的所有区域
+     * Converts every region of one dimension.
      *
-     * 使用时间戳缓存检测需要更新的区域，跳过未变化的区域。
+     * Uses the timestamp cache, so unchanged regions are skipped.
      *
-     * @param server Minecraft服务器实例
-     * @param dimensionId 维度ID（如"minecraft:overworld"）
+     * @param server the running server
+     * @param dimensionId the dimension, e.g. "minecraft:overworld"
      */
     public static void generateDimension(MinecraftServer server, String dimensionId) {
         if (!tryStartRun()) {
@@ -224,12 +224,13 @@ public class ConversionOrchestrator {
     }
 
     /**
-     * 执行单维度强制转换 - 强制重新生成指定维度的所有区域
+     * Rebuilds one dimension from scratch.
      *
-     * 清除维度缓存目录后重新生成所有区域，忽略时间戳缓存。
+     * Clears the dimension's cache directory and regenerates every region, ignoring the
+     * timestamp cache.
      *
-     * @param server Minecraft服务器实例
-     * @param dimensionId 维度ID（如"minecraft:overworld"）
+     * @param server the running server
+     * @param dimensionId the dimension, e.g. "minecraft:overworld"
      */
     public static void generateDimensionForce(MinecraftServer server, String dimensionId) {
         if (!tryStartRun()) {
@@ -242,8 +243,8 @@ public class ConversionOrchestrator {
         ServerLevel level = server.getLevel(dimKey);
         if (level == null) { LOGGER.error("Level not loaded for dimension: {}", dimensionId); releaseRun(); return; }
 
-        // 强制生成前先清除该维度的缓存目录
-        String fullDimId = dimKey.identifier().toString(); // 完整维度 ID（包含 namespace）
+        // Clear this dimension's cache before regenerating it.
+        String fullDimId = dimKey.identifier().toString(); // full ID, namespace included
         String xaeroDimName = DimensionPathMapping.getInstance().toXaeroDimension(fullDimId);
         Path dimCacheDir = CACHE_DIR.resolve(xaeroDimName);
         clearDimensionCache(dimCacheDir);
@@ -268,13 +269,13 @@ public class ConversionOrchestrator {
     }
 
     /**
-     * 检查单个区域的MCA文件是否存在
+     * Whether one region's MCA file exists.
      *
-     * @param server MinecraftServer实例
-     * @param dimension 维度ResourceKey
-     * @param regionX 区域X坐标
-     * @param regionZ 区域Z坐标
-     * @return MCA文件路径（如果存在），null表示不存在
+     * @param server the running server
+     * @param dimension the dimension key
+     * @param regionX region X coordinate
+     * @param regionZ region Z coordinate
+     * @return the MCA file path, or {@code null} if there is none
      */
     public static Path checkMcaFileExists(MinecraftServer server, ResourceKey<Level> dimension, int regionX, int regionZ) {
         ServerLevel level = server.getLevel(dimension);
@@ -289,13 +290,13 @@ public class ConversionOrchestrator {
     }
 
     /**
-     * 执行单区域转换 - 转换指定维度的单个区域
+     * Converts a single region.
      *
-     * @param server Minecraft服务器实例
-     * @param dimension 维度ResourceKey
-     * @param regionX 区域X坐标
-     * @param regionZ 区域Z坐标
-     * @return 转换结果状态
+     * @param server the running server
+     * @param dimension the dimension key
+     * @param regionX region X coordinate
+     * @param regionZ region Z coordinate
+     * @return what happened
      */
     public static SingleRegionResult generateSingleRegion(MinecraftServer server, ResourceKey<Level> dimension, int regionX, int regionZ) {
         if (RUN_LOCK.get()) {
@@ -303,7 +304,7 @@ public class ConversionOrchestrator {
             return SingleRegionResult.ALREADY_RUNNING;
         }
 
-        // 提前检查 MCA 文件是否存在
+        // Check the MCA file exists before doing anything else.
         Path mcaPath = checkMcaFileExists(server, dimension, regionX, regionZ);
         if (mcaPath == null) {
             LOGGER.warn("MCA file not found for region ({}, {}) in dimension {}", regionX, regionZ, dimension.identifier().getPath());
@@ -326,19 +327,19 @@ public class ConversionOrchestrator {
             return SingleRegionResult.CONVERSION_FAILED;
         }
 
-        // 使用完整维度 ID 作为缓存 key（确保新格式路径正确转换）
+        // Cache key is the full dimension ID, so current-layout paths map correctly.
         String fullDimId = dimension.identifier().toString();
-        String dimPath = dimension.identifier().getPath(); // 用于配置查找
+        String dimPath = dimension.identifier().getPath(); // used for config lookups
 
-        // 从配置获取维度扫描配置
+        // Scan settings for this dimension.
         DimensionScanConfig scanConfig = ModConfig.SERVER.getConfigForDimension(dimPath);
         ScanMode scanMode = scanConfig.scanMode();
         int caveLayer = scanConfig.getCaveLayer();
 
-        // 使用 Xaero 格式的维度目录名（使用完整维度 ID，确保新格式路径正确转换）
+        // Xaero's directory name, from the full dimension ID.
         String xaeroDimName = DimensionPathMapping.getInstance().toXaeroDimension(fullDimId);
 
-        // 获取 MCA 文件存放目录（1.21+ 自动检测路径）
+        // Where the MCA files live (detected at runtime on 1.21+).
         Path regionDir = RegionScanner.getRegionDir(level);
 
         if (regionDir == null) {
@@ -347,7 +348,7 @@ public class ConversionOrchestrator {
             return SingleRegionResult.CONVERSION_FAILED;
         }
 
-        // 计算输出目录（包含 caves/<layer> 子目录）
+        // Output directory, including the caves/<layer> subdirectory when relevant.
         Path baseOutputDir = CACHE_DIR.resolve(xaeroDimName);
         Path outputDir;
         if (caveLayer == Integer.MAX_VALUE) {
@@ -356,13 +357,13 @@ public class ConversionOrchestrator {
             outputDir = baseOutputDir.resolve("caves").resolve(String.valueOf(caveLayer));
         }
 
-        // 从运行时获取准确的维度类型信息
+        // Take the real dimension type from the running server.
         DimensionTypeInfo dimTypeInfo = DimensionTypeInfo.fromDimensionType(level.dimensionType());
         LOGGER.info("Dimension {}: hasSkylight={}, hasCeiling={}, minY={}, height={}",
             dimPath, dimTypeInfo.hasSkylight(), dimTypeInfo.hasCeiling(),
             dimTypeInfo.minY(), dimTypeInfo.height());
 
-        // 根据配置选择光照模式和洞穴参数
+        // Lighting mode and cave parameters, from the config.
         LightMode lightMode;
         CaveModeParams caveParams;
         if (scanMode == ScanMode.CAVE) {
@@ -402,46 +403,46 @@ public class ConversionOrchestrator {
     }
 
     /**
-     * 转换指定维度的所有区域
+     * Converts every region of one dimension.
      *
-     * 根据force参数决定是否强制重新生成所有区域，
-     * 或使用时间戳缓存仅处理有变化的区域。
+     * With {@code force} it regenerates everything; otherwise the timestamp cache decides
+     * what has changed.
      *
-     * @param server Minecraft服务器实例
-     * @param dimRegions 维度区域数据
-     * @param force 是否强制重新生成
+     * @param server the running server
+     * @param dimRegions the dimension and its regions
+     * @param force whether to regenerate regardless of timestamps
      */
     private static void convertDimension(MinecraftServer server, DimensionRegions dimRegions, boolean force) {
         ServerLevel level = server.getLevel(dimRegions.dimension());
         if (level == null) { LOGGER.error("Level not loaded"); return; }
 
         currentDimension = dimRegions.dimension();
-        // 获取完整的维度 ID（包含 namespace，如 "twilightforest:twilight_forest"）
-        // 用于 Xaero 目录映射，确保新格式路径能正确转换为 namespace$path 格式
+        // Full dimension ID, namespace included, e.g. "twilightforest:twilight_forest".
+        // Used for the Xaero directory mapping so current-layout paths become namespace$path.
         String fullDimId = dimRegions.dimension().identifier().toString();
-        // 获取维度 path 部分（不含 namespace，如 "twilight_forest"）
-        // 用于配置查找，因为配置可能只使用 path 部分
+        // Just the path part, e.g. "twilight_forest".
+        // Used for config lookups, since config entries may omit the namespace.
         String dimPath = dimRegions.dimension().identifier().getPath();
 
-        // 从配置获取维度扫描配置（使用 path 部分，因为配置可能不含 namespace）
+        // Scan settings for this dimension, looked up by path.
         DimensionScanConfig scanConfig = ModConfig.SERVER.getConfigForDimension(dimPath);
         ScanMode scanMode = scanConfig.scanMode();
         int caveLayer = scanConfig.getCaveLayer();
 
-        // 获取 Xaero 格式的目录名（使用完整维度 ID，确保新格式路径正确转换）
+        // Xaero's directory name, from the full dimension ID.
         String xaeroDimName = DimensionPathMapping.getInstance().toXaeroDimension(fullDimId);
 
-        // 获取 MCA 文件存放目录（1.21+ 自动检测路径）
+        // Where the MCA files live (detected at runtime on 1.21+).
         Path regionDir = RegionScanner.getRegionDir(level);
 
-        // 计算输出目录（包含 caves/<layer> 子目录）
+        // Output directory, including the caves/<layer> subdirectory when relevant.
         Path baseOutputDir = CACHE_DIR.resolve(xaeroDimName);
         Path outputDir;
         if (caveLayer == Integer.MAX_VALUE) {
-            // 地表模式：直接在维度目录
+            // Surface mode: straight into the dimension directory.
             outputDir = baseOutputDir;
         } else {
-            // 洞穴模式：存放到 caves/<layer> 子目录
+            // Cave mode: into caves/<layer>.
             outputDir = baseOutputDir.resolve("caves").resolve(String.valueOf(caveLayer));
         }
 
@@ -450,19 +451,19 @@ public class ConversionOrchestrator {
             return;
         }
 
-        // 检查 region 目录是否存在
+        // The region directory has to exist.
         if (regionDir == null) {
             LOGGER.error("Region directory not found for dimension: {}", xaeroDimName);
             return;
         }
 
-        // 从运行时获取准确的维度类型信息
+        // Take the real dimension type from the running server.
         DimensionTypeInfo dimTypeInfo = DimensionTypeInfo.fromDimensionType(level.dimensionType());
         LOGGER.info("Dimension {}: hasSkylight={}, hasCeiling={}, minY={}, height={}",
             dimPath, dimTypeInfo.hasSkylight(), dimTypeInfo.hasCeiling(),
             dimTypeInfo.minY(), dimTypeInfo.height());
 
-        // 根据配置选择光照模式和洞穴参数
+        // Lighting mode and cave parameters, from the config.
         LightMode lightMode;
         CaveModeParams caveParams;
         if (scanMode == ScanMode.CAVE) {
@@ -477,7 +478,7 @@ public class ConversionOrchestrator {
             LOGGER.info("Dimension {}: using SURFACE mode", xaeroDimName);
         }
 
-        // 使用时间戳缓存检测需要更新的区域
+        // Ask the timestamp cache what changed.
         McaTimestampCache mcaCache = getTimestampCache();
         GenerationCache genCache = GenerationCache.getInstance(CACHE_DIR);
         List<RegionCoords> needsUpdate = force ? dimRegions.regions() : mcaCache.scanAndUpdate(dimPath, regionDir);
@@ -487,12 +488,12 @@ public class ConversionOrchestrator {
         LOGGER.info("Dimension {}: {} total regions, {} need update (force={})", dimPath, regions.size(), needsUpdate.size(), force);
 
         List<RegionCoords> failedRegions = new ArrayList<>();
-        skippedCount = 0;  // 重置跳过计数
+        skippedCount = 0;  // reset the skip counter
         long generationTimeSeconds = System.currentTimeMillis() / 1000;  // Unified generation timestamp (seconds)
 
-        // 使用独立 MCA 解析器转换需要更新的区域（更快，不加载 chunks）
+        // Convert with the standalone MCA parser: faster, and it never loads chunks.
         for (RegionCoords coords : needsUpdate) {
-            // 检查是否在区域列表中
+            // Only regions that are actually present.
             if (!regionSet.contains(coords)) {
                 continue;
             }
@@ -500,7 +501,7 @@ public class ConversionOrchestrator {
             currentStatus = "Converting region (" + coords.x() + ", " + coords.z() + ")";
             Path mcaPath = regionDir.resolve("r." + coords.x() + "." + coords.z() + ".mca");
 
-            // 使用独立解析器直接读取 MCA 文件（使用维度类型信息）
+            // Read the MCA file directly, with the dimension type info.
             ConvertedRegion converted = RegionConverterStandalone.convertRegion(
                 mcaPath, coords.x(), coords.z(), dimTypeInfo, lightMode, caveParams);
 
@@ -509,7 +510,8 @@ public class ConversionOrchestrator {
                     Path outputFile = XaeroWriter.writeRegionFile(outputDir, converted);
                     mcaCache.updateTimestamp(dimPath, coords.x(), coords.z(), mcaPath);
                     // Update generation cache with timestamp and hash
-                    // relativePath 格式：xaeroDim/regionX_regionZ（地表）或 xaeroDim/caves/layer/regionX_regionZ（洞穴）
+                    // relativePath is xaeroDim/regionX_regionZ, or
+                    // xaeroDim/caves/layer/regionX_regionZ for cave layers.
                     String relativePath;
                     if (caveLayer == Integer.MAX_VALUE) {
                         relativePath = xaeroDimName + "/" + coords.x() + "_" + coords.z();
@@ -529,25 +531,25 @@ public class ConversionOrchestrator {
             }
         }
 
-        // 非 force 模式下，也处理尚未生成过的区域（新增区域）
+        // Outside force mode, also pick up regions that were never generated at all.
         if (!force) {
             for (RegionCoords coords : regions) {
-                if (needsUpdate.contains(coords)) continue;  // 已处理
+                if (needsUpdate.contains(coords)) continue;  // already done above
 
-                // 检查输出文件是否存在
+                // Is there already an output file?
                 if (XaeroWriter.regionFileExists(outputDir, coords.x(), coords.z())) {
-                    // 文件存在且时间戳未更新，跳过
+                    // Present and up to date, so skip it.
                     processedCount++;
                     skippedCount++;
                     LOGGER.debug("Skipped region ({}, {}): unchanged (timestamp match)", coords.x(), coords.z());
                     continue;
                 }
 
-                // 新区域，需要生成
+                // New region; generate it.
                 currentStatus = "Generating new region (" + coords.x() + ", " + coords.z() + ")";
                 Path mcaPath = regionDir.resolve("r." + coords.x() + "." + coords.z() + ".mca");
 
-                // 使用维度类型信息进行转换
+                // Convert, with the dimension type info.
                 ConvertedRegion converted = RegionConverterStandalone.convertRegion(
                     mcaPath, coords.x(), coords.z(), dimTypeInfo, lightMode, caveParams);
 
@@ -556,7 +558,8 @@ public class ConversionOrchestrator {
                         Path outputFile = XaeroWriter.writeRegionFile(outputDir, converted);
                         mcaCache.updateTimestamp(dimPath, coords.x(), coords.z(), mcaPath);
                         // Update generation cache with timestamp and hash
-                        // relativePath 格式：xaeroDim/regionX_regionZ（地表）或 xaeroDim/caves/layer/regionX_regionZ（洞穴）
+                        // relativePath is xaeroDim/regionX_regionZ, or
+                        // xaeroDim/caves/layer/regionX_regionZ for cave layers.
                         String relativePath;
                         if (caveLayer == Integer.MAX_VALUE) {
                             relativePath = xaeroDimName + "/" + coords.x() + "_" + coords.z();
@@ -577,7 +580,7 @@ public class ConversionOrchestrator {
             }
         }
 
-        // 重试失败的区域
+        // Retry whatever failed.
         if (!failedRegions.isEmpty()) {
             LOGGER.warn("Failed to convert {} regions", failedRegions.size());
             for (RegionCoords coords : failedRegions) {
@@ -585,27 +588,27 @@ public class ConversionOrchestrator {
             }
         }
 
-        // 输出汇总信息
+        // Summarise.
         LOGGER.info("Dimension {} completed: {} total, {} converted, {} skipped (unchanged), {} skipped (empty MCA), {} failed",
             dimPath, regions.size(), processedCount - skippedCount, skippedCount, dimRegions.skippedEmptyCount(), failedRegions.size());
 
-        // 记录已完成的维度友好名称（用于全量生成完成提示）
+        // Record the friendly name, for the "generation complete" message.
         String friendlyName = DimensionPathMapping.getInstance().getFriendlyName(dimRegions.dimension());
         completedDimensions.add(friendlyName);
 
-        // 保存时间戳缓存
+        // Persist the timestamp cache.
         mcaCache.saveCache();
         genCache.save();
     }
 
     /**
-     * 强制保存所有维度的所有区块到磁盘
+     * Flushes every loaded chunk of every dimension to disk.
      *
-     * 确保MCA文件是最新的，必须在读取MCA文件之前调用。
-     * 由于C2ME并发限制，必须在服务器线程上执行（不能异步）。
+     * The MCA files have to be current before they are read. Must run on the server thread:
+     * C2ME does not allow this concurrently.
      *
-     * @param server Minecraft服务器实例
-     * @return true表示保存成功，false表示保存失败
+     * @param server the running server
+     * @return {@code true} if the save succeeded
      */
     private static boolean saveAllChunks(MinecraftServer server) {
         try {
@@ -655,21 +658,21 @@ public class ConversionOrchestrator {
     }
 
     /**
-     * 解析维度ID为ResourceKey
+     * Resolves a dimension ID to its key.
      *
-     * 支持多种输入格式：
-     * - 简称：overworld, the_nether, the_end
-     * - 全称：minecraft:overworld, minecraft:the_nether
-     * - Mod维度ID：twilightforest:twilight_forest
+     * Accepts:
+     * - short names: overworld, the_nether, the_end
+     * - full IDs: minecraft:overworld, minecraft:the_nether
+     * - modded IDs: twilightforest:twilight_forest
      *
-     * @param id 维度ID字符串
-     * @param server Minecraft服务器实例
-     * @return 维度ResourceKey，无效ID返回null
+     * @param id the dimension ID
+     * @param server the running server
+     * @return the dimension key, or {@code null} if the ID does not resolve
      */
     public static ResourceKey<Level> parseDimensionId(String id, MinecraftServer server) {
         String normalized = id.toLowerCase();
 
-        // 原版维度标准名称（支持多种输入格式，但内部使用标准名称）
+        // Canonical names for the vanilla dimensions; input may use any of the forms above.
         switch (normalized) {
             case "overworld", "minecraft:overworld":
                 return Level.OVERWORLD;
@@ -679,10 +682,10 @@ public class ConversionOrchestrator {
                 return Level.END;
         }
 
-        // 尝试解析为 Identifier 并查找维度
+        // Otherwise parse it as an identifier and look it up.
         try {
             Identifier location = Identifier.parse(id);
-            // 遍历所有已加载的维度查找匹配
+            // Search the loaded dimensions for a match.
             for (ServerLevel level : server.getAllLevels()) {
                 Identifier dimLocation = level.dimension().identifier();
                 if (dimLocation.equals(location) ||
@@ -700,12 +703,12 @@ public class ConversionOrchestrator {
     }
 
     /**
-     * 执行计划增量扫描 - 扫描所有维度并更新时间戳变化的区域
+     * Runs a scheduled incremental scan across every dimension.
      *
-     * 由IncrementalUpdateHandler从服务器线程周期性调用。
-     * 扫描所有维度，仅更新时间戳有变化的区域。
+     * Called periodically by IncrementalUpdateHandler on the server thread. Only regions
+     * whose timestamps moved are regenerated.
      *
-     * @param server Minecraft服务器实例
+     * @param server the running server
      */
     public static void performIncrementalScan(MinecraftServer server) {
         if (!tryStartRun()) {
@@ -747,23 +750,23 @@ public class ConversionOrchestrator {
             ServerLevel level = server.getLevel(dimRegions.dimension());
             if (level == null) continue;
 
-            // 获取完整维度 ID（包含 namespace，用于 Xaero 目录映射）
+            // Full dimension ID, namespace included, for the Xaero directory mapping.
             String fullDimId = dimRegions.dimension().identifier().toString();
-            String dimPath = dimRegions.dimension().identifier().getPath(); // 用于配置查找
+            String dimPath = dimRegions.dimension().identifier().getPath(); // used for config lookups
 
-            // 从配置获取维度扫描配置
+            // Scan settings for this dimension.
             DimensionScanConfig scanConfig = ModConfig.SERVER.getConfigForDimension(dimPath);
             ScanMode scanMode = scanConfig.scanMode();
             int caveLayer = scanConfig.getCaveLayer();
 
-            // 获取 Xaero 格式的目录名（使用完整维度 ID，确保新格式路径正确转换）
+            // Xaero's directory name, from the full dimension ID.
             String xaeroDimName = DimensionPathMapping.getInstance().toXaeroDimension(fullDimId);
 
-            // 获取 MCA 文件存放目录（1.21+ 自动检测路径）
+            // Where the MCA files live (detected at runtime on 1.21+).
             Path regionDir = RegionScanner.getRegionDir(level);
             if (regionDir == null) continue;
 
-            // 计算输出目录（包含 caves/<layer> 子目录）
+            // Output directory, including the caves/<layer> subdirectory when relevant.
             Path baseOutputDir = CACHE_DIR.resolve(xaeroDimName);
             Path outputDir;
             if (caveLayer == Integer.MAX_VALUE) {
@@ -772,10 +775,10 @@ public class ConversionOrchestrator {
                 outputDir = baseOutputDir.resolve("caves").resolve(String.valueOf(caveLayer));
             }
 
-            // 从运行时获取准确的维度类型信息
+            // Take the real dimension type from the running server.
             DimensionTypeInfo dimTypeInfo = DimensionTypeInfo.fromDimensionType(level.dimensionType());
 
-            // 获取光照模式和洞穴参数
+            // Lighting mode and cave parameters.
             LightMode lightMode;
             CaveModeParams caveParams;
             if (scanMode == ScanMode.CAVE) {
@@ -930,73 +933,73 @@ public class ConversionOrchestrator {
     }
 
     /**
-     * 检查转换任务是否正在运行
+     * Whether a conversion is running.
      *
-     * @return true表示正在运行，false表示空闲
+     * @return {@code true} while one is in progress
      */
     public static boolean isRunning() { return isRunning; }
 
     /**
-     * 获取已处理的区域数量
+     * Regions handled so far.
      *
-     * @return 已处理数量
+     * @return the processed count
      */
     public static int getProcessedCount() { return processedCount; }
 
     /**
-     * 获取总区域数量
+     * Regions in total.
      *
-     * @return 总数量
+     * @return the total count
      */
     public static int getTotalCount() { return totalCount; }
 
     /**
-     * 获取本次实际更新的区域数量（不含跳过的）
+     * Regions actually regenerated this run, excluding skips.
      *
-     * @return 实际更新数量
+     * @return the updated count
      */
     public static int getUpdatedCount() { return processedCount - skippedCount; }
 
     /**
-     * 获取跳过的区域数量（时间戳未变化）
+     * Regions skipped because their timestamp had not moved.
      *
-     * @return 跳过数量
+     * @return the skipped count
      */
     public static int getSkippedCount() { return skippedCount; }
 
     /**
-     * 获取当前状态描述
+     * What the conversion is doing right now.
      *
-     * @return 状态字符串
+     * @return the status text
      */
     public static String getStatus() { return currentStatus; }
 
     /**
-     * 获取当前正在处理的维度
+     * The dimension being converted.
      *
-     * @return 维度ResourceKey，空闲时返回null
+     * @return the dimension key, or {@code null} when idle
      */
     public static ResourceKey<Level> getCurrentDimension() { return currentDimension; }
 
     /**
-     * 获取已完成的维度列表
+     * Dimensions finished this run.
      *
-     * @return 已完成维度的友好名称列表
+     * @return their friendly names
      */
     public static List<String> getCompletedDimensions() { return completedDimensions; }
 
     /**
-     * 维度缓存统计信息
+     * Cache statistics for one dimension.
      *
-     * @param dimension 维度名称（友好格式）
-     * @param regionCount 区域数量
-     * @param sizeBytes 占用空间（字节）
+     * @param dimension the dimension's friendly name
+     * @param regionCount how many regions are cached
+     * @param sizeBytes how much disk they take, in bytes
      */
     public record DimensionCacheStats(String dimension, int regionCount, long sizeBytes) {
         /**
-         * 获取占用空间（MB）
+         * @return the cache size in MB
          *
-         * @return 占用空间（MB）
+         * @return the cache size in MB
          */
         public double sizeMB() {
             return sizeBytes / (1024.0 * 1024.0);
@@ -1004,11 +1007,11 @@ public class ConversionOrchestrator {
     }
 
     /**
-     * 获取缓存统计信息
+     * Cache statistics per dimension.
      *
-     * 遍历缓存目录，统计各维度的区域数量和文件大小。
+     * Walks the cache directory counting regions and adding up file sizes.
      *
-     * @return 维度缓存统计信息列表
+     * @return one entry per dimension that has cached regions
      */
     public static List<DimensionCacheStats> getCacheStats() {
         List<DimensionCacheStats> stats = new ArrayList<>();
@@ -1028,14 +1031,15 @@ public class ConversionOrchestrator {
                 int regionCount = 0;
                 long totalSize = 0;
 
-                // 遍历维度目录下的所有 zip 文件（包括 caves 子目录）
+                // Every zip under this dimension, cave layers included.
+                // A stream can only be consumed once, so collect first, then count and measure.
                 try (Stream<Path> files = Files.walk(dimDir)) {
-                    regionCount = (int) files
+                    List<Path> zipFiles = files
                             .filter(p -> p.toString().endsWith(".zip"))
-                            .count();
+                            .toList();
 
-                    totalSize = files
-                            .filter(p -> p.toString().endsWith(".zip"))
+                    regionCount = zipFiles.size();
+                    totalSize = zipFiles.stream()
                             .mapToLong(p -> {
                                 try {
                                     return Files.size(p);

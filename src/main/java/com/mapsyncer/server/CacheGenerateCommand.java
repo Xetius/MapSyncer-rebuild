@@ -5,15 +5,15 @@ import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
-import com.mapsyncer.config.ModConfig;
 import com.mapsyncer.config.ModConfig.UpdateMode;
+import com.mapsyncer.config.ModConfig;
 import com.mapsyncer.network.PacketHandler;
+import com.mapsyncer.platform.Platform;
 import com.mapsyncer.server.ConversionOrchestrator.DimensionCacheStats;
 import com.mapsyncer.server.ConversionOrchestrator.SingleRegionResult;
 import com.mapsyncer.util.ChatUtils;
 import com.mapsyncer.util.DimensionPathMapping;
 import com.mapsyncer.util.MapSyncerExecutors;
-import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.commands.arguments.DimensionArgument;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.commands.CommandSourceStack;
@@ -26,29 +26,29 @@ import net.minecraft.world.level.Level;
 import java.util.List;
 
 /**
- * 缓存生成命令 - 注册和处理/mapsyncer命令
+ * The {@code /mapsyncer} command: cache generation and status.
  *
- * 提供以下命令：
- * - /mapsyncer help - 显示帮助信息
- * - /mapsyncer generate - 生成所有维度的地图缓存
- * - /mapsyncer generate <dimension> - 生成指定维度的地图缓存
- * - /mapsyncer generate <dimension> <x> <z> - 生成指定区域的地图缓存
- * - /mapsyncer generate <dimension> force - 强制重新生成指定维度
- * - /mapsyncer status - 显示当前生成状态
- * - /mapsyncer incremental off/tick/scheduled/status - 配置增量更新模式
+ * Subcommands:
+ * - /mapsyncer help - show help
+ * - /mapsyncer generate - build the map cache for every dimension
+ * - /mapsyncer generate <dimension> - build the cache for one dimension
+ * - /mapsyncer generate <dimension> <x> <z> - build the cache for one region
+ * - /mapsyncer generate <dimension> force - rebuild one dimension from scratch
+ * - /mapsyncer status - show generation state and cache statistics
+ * - /mapsyncer incremental off/tick/scheduled/status - configure incremental updates
  *
- * 需要管理员权限（permission level 4）才能执行。
+ * Admin only: vanilla permission level 4, or the mapsyncer.admin node on Paper.
  */
 public class CacheGenerateCommand {
 
     /**
-     * 注册命令到命令分发器
+     * Registers the command.
      *
-     * @param dispatcher Brigadier命令分发器
+     * @param dispatcher the Brigadier dispatcher to register on
      */
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
         dispatcher.register(Commands.literal("mapsyncer")
-                .requires(Commands.hasPermission(Commands.LEVEL_OWNERS))
+                .requires(source -> Platform.get().isAdmin(source))
                 .executes(CacheGenerateCommand::showHelp)
                 .then(Commands.literal("help")
                         .executes(CacheGenerateCommand::showHelp))
@@ -99,19 +99,19 @@ public class CacheGenerateCommand {
 
     private static int openGui(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
         ServerPlayer player = ctx.getSource().getPlayerOrException();
-        if (!ServerPlayNetworking.canSend(player, PacketHandler.OpenGuiPayload.TYPE)) {
+        if (!Platform.canSend(player, PacketHandler.OpenGuiPayload.TYPE)) {
             ctx.getSource().sendFailure(ChatUtils.error("mapsyncer.command.gui_client_missing"));
             return 0;
         }
-        ServerPlayNetworking.send(player, new PacketHandler.OpenGuiPayload());
+        Platform.send(player, new PacketHandler.OpenGuiPayload());
         return Command.SINGLE_SUCCESS;
     }
 
     /**
-     * 生成所有维度的地图缓存
+     * Builds the map cache for every dimension.
      *
-     * @param ctx 命令上下文
-     * @return 命令执行结果
+     * @param ctx command context
+     * @return the command result
      */
     private static int generateAll(CommandContext<CommandSourceStack> ctx) {
         MinecraftServer server = ctx.getSource().getServer();
@@ -131,11 +131,11 @@ public class CacheGenerateCommand {
     }
 
     /**
-     * 生成指定维度的地图缓存
+     * Builds the map cache for one dimension.
      *
-     * @param ctx 命令上下文
-     * @return 命令执行结果
-     * @throws CommandSyntaxException 如果维度参数解析失败
+     * @param ctx command context
+     * @return the command result
+     * @throws CommandSyntaxException if the dimension argument cannot be parsed
      */
     private static int generateDimension(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
         ServerLevel level = DimensionArgument.getDimension(ctx, "dimension");
@@ -157,13 +157,13 @@ public class CacheGenerateCommand {
     }
 
     /**
-     * 强制重新生成指定维度的地图缓存
+     * Rebuilds one dimension's map cache from scratch.
      *
-     * 清除维度缓存目录后重新生成所有区域。
+     * Clears that dimension's cache directory, then regenerates every region.
      *
-     * @param ctx 命令上下文
-     * @return 命令执行结果
-     * @throws CommandSyntaxException 如果维度参数解析失败
+     * @param ctx command context
+     * @return the command result
+     * @throws CommandSyntaxException if the dimension argument cannot be parsed
      */
     private static int generateDimensionForce(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
         ServerLevel level = DimensionArgument.getDimension(ctx, "dimension");
@@ -185,11 +185,11 @@ public class CacheGenerateCommand {
     }
 
     /**
-     * 生成单个区域的地图缓存
+     * Builds the map cache for a single region.
      *
-     * @param ctx 命令上下文
-     * @return 命令执行结果
-     * @throws CommandSyntaxException 如果参数解析失败
+     * @param ctx command context
+     * @return the command result
+     * @throws CommandSyntaxException if an argument cannot be parsed
      */
     private static int generateSingleRegion(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
         ServerLevel level = DimensionArgument.getDimension(ctx, "dimension");
@@ -222,49 +222,49 @@ public class CacheGenerateCommand {
     }
 
     /**
-     * 显示当前生成状态、增量更新状态和缓存统计（合并为一行）
+     * Reports generation state, incremental update state and cache statistics.
      *
-     * @param ctx 命令上下文
-     * @return 命令执行结果
+     * @param ctx command context
+     * @return the command result
      */
     private static int showStatus(CommandContext<CommandSourceStack> ctx) {
         IncrementalUpdateHandler handler = IncrementalUpdateHandler.getInstance();
         UpdateMode mode = ModConfig.SERVER.incrementalUpdateMode;
 
-        // 构建完整状态消息
+        // Build the combined status line.
         String genStatus;
         String incStatus;
 
         if (ConversionOrchestrator.isRunning()) {
-            genStatus = String.format("转换进行中：%d/%d 个区域 - %s",
+            genStatus = String.format("Conversion running: %d/%d regions - %s",
                     ConversionOrchestrator.getProcessedCount(),
                     ConversionOrchestrator.getTotalCount(),
                     ConversionOrchestrator.getStatus());
         } else {
-            genStatus = "无转换任务";
+            genStatus = "No conversion running";
         }
 
         if (mode == UpdateMode.DISABLED || !handler.isRunning()) {
-            incStatus = "增量更新未启用";
+            incStatus = "Incremental updates off";
         } else if (mode == UpdateMode.TICK) {
             int interval = ModConfig.SERVER.incrementalUpdateIntervalTicks;
             int remainingTicks = interval - handler.getTickCounter();
             int remainingSeconds = remainingTicks / 20;
             int minutes = remainingSeconds / 60;
             int seconds = remainingSeconds % 60;
-            incStatus = String.format("增量更新TICK模式，下次 %d分%d秒后", minutes, seconds);
+            incStatus = String.format("Incremental updates in TICK mode, next in %dm %ds", minutes, seconds);
         } else if (mode == UpdateMode.SCHEDULED) {
             int hour = ModConfig.SERVER.scheduledUpdateHour;
             int minute = ModConfig.SERVER.scheduledUpdateMinute;
-            incStatus = String.format("增量更新定时模式，每日 %02d:%02d", hour, minute);
+            incStatus = String.format("Incremental updates scheduled daily at %02d:%02d", hour, minute);
         } else {
-            incStatus = "增量更新未启用";
+            incStatus = "Incremental updates off";
         }
 
-        // 合并为一行显示
+        // Both parts on one line.
         ctx.getSource().sendSuccess(() -> ChatUtils.message("mapsyncer.status.combined", genStatus, incStatus), false);
 
-        // 显示缓存统计（总计一行，每个维度单独一行）
+        // Cache statistics: a total line, then one line per dimension.
         List<DimensionCacheStats> cacheStats = ConversionOrchestrator.getCacheStats();
         if (!cacheStats.isEmpty()) {
             int totalDims = cacheStats.size();
@@ -272,11 +272,11 @@ public class CacheGenerateCommand {
             long totalSize = cacheStats.stream().mapToLong(DimensionCacheStats::sizeBytes).sum();
             double totalSizeMB = totalSize / (1024.0 * 1024.0);
 
-            // 总计一行
+            // Total.
             ctx.getSource().sendSuccess(() -> ChatUtils.message("mapsyncer.status.cache_total",
                     totalDims, totalRegions, totalSizeMB), false);
 
-            // 每个维度单独一行
+            // One line per dimension.
             for (DimensionCacheStats stat : cacheStats) {
                 ctx.getSource().sendSuccess(() -> ChatUtils.message("mapsyncer.status.cache_dim",
                         stat.dimension(), stat.regionCount(), stat.sizeMB()), false);
@@ -300,10 +300,10 @@ public class CacheGenerateCommand {
     }
 
     /**
-     * 禁用增量更新
+     * Turns incremental updates off.
      *
-     * @param ctx 命令上下文
-     * @return 命令执行结果
+     * @param ctx command context
+     * @return the command result
      */
     private static int setIncrementalOff(CommandContext<CommandSourceStack> ctx) {
         ModConfig.SERVER.incrementalUpdateMode = UpdateMode.DISABLED;
@@ -314,12 +314,12 @@ public class CacheGenerateCommand {
     }
 
     /**
-     * 设置TICK模式增量更新
+     * Switches incremental updates to TICK mode.
      *
-     * 使用配置中默认的tick间隔。
+     * Uses the interval from the config.
      *
-     * @param ctx 命令上下文
-     * @return 命令执行结果
+     * @param ctx command context
+     * @return the command result
      */
     private static int setIncrementalTick(CommandContext<CommandSourceStack> ctx) {
         ModConfig.SERVER.incrementalUpdateMode = UpdateMode.TICK;
@@ -331,10 +331,10 @@ public class CacheGenerateCommand {
     }
 
     /**
-     * 设置TICK模式增量更新并指定间隔
+     * Switches incremental updates to TICK mode with a given interval.
      *
-     * @param ctx 命令上下文
-     * @return 命令执行结果
+     * @param ctx command context
+     * @return the command result
      */
     private static int setIncrementalTickInterval(CommandContext<CommandSourceStack> ctx) {
         int interval = IntegerArgumentType.getInteger(ctx, "interval");
@@ -347,12 +347,12 @@ public class CacheGenerateCommand {
     }
 
     /**
-     * 设置SCHEDULED模式增量更新
+     * Switches incremental updates to SCHEDULED mode.
      *
-     * 使用配置中默认的计划时间。
+     * Uses the time from the config.
      *
-     * @param ctx 命令上下文
-     * @return 命令执行结果
+     * @param ctx command context
+     * @return the command result
      */
     private static int setIncrementalScheduled(CommandContext<CommandSourceStack> ctx) {
         ModConfig.SERVER.incrementalUpdateMode = UpdateMode.SCHEDULED;
@@ -365,10 +365,10 @@ public class CacheGenerateCommand {
     }
 
     /**
-     * 设置SCHEDULED模式并指定小时（使用默认分钟）
+     * Switches to SCHEDULED mode at a given hour, using the configured minute.
      *
-     * @param ctx 命令上下文
-     * @return 命令执行结果
+     * @param ctx command context
+     * @return the command result
      */
     private static int setScheduledTimeDefaultMinute(CommandContext<CommandSourceStack> ctx) {
         int hour = IntegerArgumentType.getInteger(ctx, "hour");
@@ -382,10 +382,10 @@ public class CacheGenerateCommand {
     }
 
     /**
-     * 设置SCHEDULED模式并指定完整时间
+     * Switches to SCHEDULED mode at a given hour and minute.
      *
-     * @param ctx 命令上下文
-     * @return 命令执行结果
+     * @param ctx command context
+     * @return the command result
      */
     private static int setScheduledTime(CommandContext<CommandSourceStack> ctx) {
         int hour = IntegerArgumentType.getInteger(ctx, "hour");
@@ -400,7 +400,7 @@ public class CacheGenerateCommand {
     }
 
     /**
-     * 保存配置文件
+     * Writes the config back to disk.
      */
     private static void saveConfig() {
         ModConfig.save();

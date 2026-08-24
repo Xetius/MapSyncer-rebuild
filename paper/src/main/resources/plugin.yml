@@ -1,0 +1,11 @@
+name: ${mod_name}
+version: '${version}'
+main: com.mapsyncer.paper.MapSyncerPlugin
+api-version: '${paper_api_version}'
+description: ${mod_description}
+authors: [${mod_authors}]
+website: https://github.com/RuoChennn/MapSyncer-for-XaeroWorldmap
+permissions:
+  mapsyncer.admin:
+    description: Access to MapSyncer admin commands and the admin GUI page
+    default: op

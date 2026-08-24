@@ -13,41 +13,41 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 生成缓存 - 缓存每个region的生成时间戳和CRC32哈希值
+ * Remembers when each region was generated and what its contents hash to.
  *
- * 用于同步时比对：
- * - 哈希值一致 → 不同步（文件内容相同）
- * - 哈希值不一致 → 检查时间戳，客户端旧于服务端则同步
+ * Used to decide what a client is missing:
+ * - hashes match: skip it, the client already has this exact data
+ * - hashes differ: compare timestamps, and send it if the client's copy is older
  *
- * 缓存格式：
- * - 存储：relativePath -> RegionMeta
- * - 文件：generation_cache.properties
- * - 格式：dimension/region_x_z = timestamp_seconds:hash
+ * Storage:
+ * - in memory: relativePath -> RegionMeta
+ * - on disk: generation_cache.properties
+ * - line format: dimension/region_x_z = timestamp_seconds:hash
  */
 public class GenerationCache {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(GenerationCache.class);
 
-    /** 单例实例 */
+    /** The single instance. */
     private static volatile GenerationCache instance;
 
-    /** 缓存文件路径 */
+    /** Where the cache file lives. */
     private final Path cacheFile;
 
-    /** 缓存数据：relativePath -> RegionMeta */
+    /** The cache itself: relativePath -> RegionMeta. */
     private final Map<String, RegionMeta> cache = new ConcurrentHashMap<>();
 
     /**
-     * Region元数据：时间戳(秒) + CRC32哈希
+     * One region's metadata: generation time in seconds plus its CRC32 hash.
      *
-     * 与TimestampHashEntry功能相同，保留此类型用于兼容。
+     * Equivalent to TimestampHashEntry; kept as its own type for compatibility.
      */
     public record RegionMeta(long timestampSeconds, String hash) {
         /**
-         * 从字符串解析Region元数据
+         * Parses a stored cache value.
          *
-         * @param value 字符串值（格式：timestamp:hash）
-         * @return 解析后的RegionMeta，解析失败返回null
+         * @param value the stored string, in {@code timestamp:hash} form
+         * @return the parsed metadata, or {@code null} if the string is malformed
          */
         public static RegionMeta parse(String value) {
             TimestampHashEntry entry = PropertiesCacheIO.parseTimestampHash(value);
@@ -55,9 +55,9 @@ public class GenerationCache {
         }
 
         /**
-         * 格式化Region元数据为字符串
+         * Formats this for storage.
          *
-         * @return 格式化字符串（timestamp:hash）
+         * @return the {@code timestamp:hash} string
          */
         public String format() {
             return timestampSeconds + ":" + hash;
@@ -65,9 +65,9 @@ public class GenerationCache {
     }
 
     /**
-     * 私有构造方法
+     * @param cacheDir directory holding the cache file
      *
-     * @param cacheDir 缓存目录路径
+     * @param cacheDir directory holding the cache file
      */
     private GenerationCache(Path cacheDir) {
         this.cacheFile = cacheDir.resolve("generation_cache.properties");
@@ -75,10 +75,10 @@ public class GenerationCache {
     }
 
     /**
-     * 获取单例实例
+     * Returns the shared instance, creating it against {@code cacheDir} on first call.
      *
-     * @param cacheDir 缓存目录路径
-     * @return 生成缓存实例
+     * @param cacheDir directory holding the cache file
+     * @return the shared instance
      */
     public static GenerationCache getInstance(Path cacheDir) {
         if (instance == null) {
@@ -92,9 +92,9 @@ public class GenerationCache {
     }
 
     /**
-     * 从文件加载缓存
+     * Loads the cache from disk.
      *
-     * 使用PropertiesCacheIO加载缓存数据。
+     * Reads through PropertiesCacheIO.
      */
     private void load() {
         Map<String, TimestampHashEntry> loaded = PropertiesCacheIO.load(cacheFile, PropertiesCacheIO::parseTimestampHash);
@@ -104,9 +104,9 @@ public class GenerationCache {
     }
 
     /**
-     * 保存缓存到文件
+     * Writes the cache to disk.
      *
-     * 使用PropertiesCacheIO保存缓存数据。
+     * Writes through PropertiesCacheIO.
      */
     public void save() {
         Map<String, TimestampHashEntry> toSave = new HashMap<>();
@@ -118,24 +118,24 @@ public class GenerationCache {
     }
 
     /**
-     * 更新region的缓存信息
+     * Records the metadata of one region.
      *
-     * @param relativePath 相对路径（如：dimension/regionX_regionZ）
-     * @param timestampSeconds 时间戳（秒）
-     * @param hash CRC32哈希值
+     * @param relativePath path within the cache, e.g. {@code dimension/regionX_regionZ}
+     * @param timestampSeconds generation time, in seconds
+     * @param hash the region's CRC32 hash
      */
     public void update(String relativePath, long timestampSeconds, String hash) {
         cache.put(relativePath, new RegionMeta(timestampSeconds, hash));
     }
 
     /**
-     * 更新region的缓存信息（自动计算哈希）
+     * Records the metadata of one region, hashing the file itself.
      *
-     * 使用HashUtils计算文件CRC32哈希。
+     * The CRC32 comes from HashUtils.
      *
-     * @param relativePath 相对路径
-     * @param filePath 文件路径
-     * @param timestampSeconds 时间戳（秒）
+     * @param relativePath path within the cache
+     * @param filePath the generated file to hash
+     * @param timestampSeconds generation time, in seconds
      */
     public void updateWithHash(String relativePath, Path filePath, long timestampSeconds) {
         String hash = HashUtils.computeFileHash(filePath);
@@ -144,40 +144,40 @@ public class GenerationCache {
     }
 
     /**
-     * 获取region的元数据
+     * Looks up one region's metadata.
      *
-     * @param relativePath 相对路径
-     * @return Region元数据，不存在返回null
+     * @param relativePath path within the cache
+     * @return the metadata, or {@code null} if this region is not cached
      */
     public RegionMeta getMeta(String relativePath) {
         return cache.get(relativePath);
     }
 
     /**
-     * 获取所有缓存数据
+     * All cached metadata.
      *
-     * <p>返回不可修改视图，避免创建完整副本浪费内存。</p>
-     * <p>如果需要修改数据，请使用 update() 方法。</p>
+     * <p>An unmodifiable view rather than a copy, so reading it is cheap.</p>
+     * <p>Use {@link #update} to change anything.</p>
      *
-     * @return 缓存数据的不可修改视图
+     * @return an unmodifiable view of the cache
      */
     public Map<String, RegionMeta> getAll() {
         return Collections.unmodifiableMap(new HashMap<>(cache));
     }
 
     /**
-     * 检查是否需要同步
+     * Whether a region needs sending to a client.
      *
-     * 同步逻辑：
-     * - 服务端无缓存 → 不同步（服务端无数据）
-     * - 客户端无元数据 → 同步（新区域）
-     * - 哈希值一致 → 不同步（内容相同）
-     * - 客户端时间戳旧于服务端 → 同步
-     * - 客户端时间戳新于服务端 → 不同步
+     * The rules:
+     * - not in the server cache: no, the server has nothing to send
+     * - client has no metadata for it: yes, it is new to them
+     * - hashes match: no, they already have this exact data
+     * - client's timestamp is older than the server's: yes
+     * - client's timestamp is newer than the server's: no
      *
-     * @param relativePath 相对路径
-     * @param clientMeta 客户端元数据
-     * @return true表示需要同步
+     * @param relativePath path within the cache
+     * @param clientMeta what the client reported for this region
+     * @return {@code true} if the region should be sent
      */
     public boolean needsSync(String relativePath, RegionMeta clientMeta) {
         RegionMeta serverMeta = cache.get(relativePath);
@@ -206,7 +206,7 @@ public class GenerationCache {
     }
 
     /**
-     * 清除缓存
+     * Empties the cache.
      */
     public void clear() {
         cache.clear();
@@ -214,9 +214,9 @@ public class GenerationCache {
     }
 
     /**
-     * 重置单例实例
+     * Drops the instance.
      *
-     * 清除缓存数据并释放单例引用，用于服务器停止时的清理。
+     * Clears the cache and releases the singleton; called when the server stops.
      */
     public static void resetInstance() {
         if (instance != null) {

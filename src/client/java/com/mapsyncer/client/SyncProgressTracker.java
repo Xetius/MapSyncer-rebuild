@@ -9,59 +9,59 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 同步进度追踪器。
- * 用于追踪和显示地图同步的进度状态，包括处理进度、耗时和完成状态。
+ * Tracks a sync in progress and reports it to the player.
+ * Covers how far along it is, how long it has taken, and whether it finished.
  *
- * <p>主要功能：</p>
+ * <p>What it does:</p>
  * <ul>
- *   <li>追踪同步的开始、进行中和完成状态</li>
- *   <li>定期显示进度百分比（每10%）</li>
- *   <li>计算同步耗时</li>
- *   <li>检测服务端响应超时</li>
+ *   <li>tracks the start, the progress and the end of a sync</li>
+ *   <li>reports the percentage as it goes</li>
+ *   <li>times the sync</li>
+ *   <li>notices when the server does not respond</li>
  * </ul>
  *
- * <p>进度显示：</p>
+ * <p>What the player sees:</p>
  * <ul>
- *   <li>每10%进度显示一次进度更新</li>
- *   <li>同步完成时显示总耗时和处理的区域数</li>
+ *   <li>a progress line as the percentage moves</li>
+ *   <li>the total time and region count when it finishes</li>
  * </ul>
  */
 public class SyncProgressTracker {
 
-    /** 是否正在追踪进度 */
+    /** Whether a sync is being tracked. */
     private static volatile boolean tracking = false;
 
-    /** 已处理的区域数 */
+    /** Regions handled so far. */
     private static volatile int processed = 0;
 
-    /** 总区域数 */
+    /** Regions in total. */
     private static volatile int total = 0;
 
-    /** 当前状态描述 */
+    /** What the sync is doing right now. */
     private static volatile String status = "";
 
-    /** 同步开始时间 */
+    /** When the sync started. */
     private static volatile long startTime = 0;
 
-    /** 上次显示的百分比，用于避免重复显示 */
+    /** The last percentage shown, so the same one is not repeated. */
     private static volatile int lastDisplayedPercent = -1;
     private static volatile long completedAt = 0;
 
-    /** 是否收到第一次响应 */
+    /** Whether the server has responded at all yet. */
     private static volatile boolean receivedFirstResponse = false;
 
-    /** 服务端响应超时时间（5秒） */
+    /** How long to wait for the server's first response: 5 seconds. */
     private static final long SERVER_RESPONSE_TIMEOUT_MS = 5000;
 
-    /** 超时检查器（静态单例，避免重复创建线程池） */
+    /** The timeout checker; one shared executor rather than a new one per sync. */
     private static volatile ScheduledExecutorService timeoutChecker = null;
 
-    /** 当前超时检查任务的Future（用于取消） */
+    /** The current timeout task, so it can be cancelled. */
     private static volatile java.util.concurrent.ScheduledFuture<?> timeoutFuture = null;
 
     /**
-     * 开始追踪同步进度。
-     * 初始化所有追踪变量，显示开始消息，并启动超时检查器。
+     * Starts tracking a sync.
+     * Resets the counters, tells the player, and arms the timeout check.
      */
     public static void startTracking() {
         tracking = true;
@@ -77,17 +77,17 @@ public class SyncProgressTracker {
     }
 
     /**
-     * 启动超时检查器。
-     * 如果在5秒内未收到服务端响应，根据服务端安装状态显示不同提示。
-     * 使用静态单例线程池，避免重复创建线程池浪费资源。
+     * Arms the timeout check.
+     * If the server has not responded within 5 seconds, says so — the message depends on
+     * whether the server is known to have MapSyncer installed.
      */
     private static void startTimeoutChecker() {
-        // 取消之前的超时任务（如果存在）
+        // Cancel any previous timeout task.
         if (timeoutFuture != null && !timeoutFuture.isDone()) {
             timeoutFuture.cancel(false);
         }
 
-        // 使用静态单例线程池（首次创建后重用）
+        // The shared executor, created on first use.
         if (timeoutChecker == null || timeoutChecker.isShutdown()) {
             timeoutChecker = Executors.newSingleThreadScheduledExecutor(r -> {
                 Thread t = new Thread(r, "mapsyncer-sync-progress-timer");
@@ -100,12 +100,12 @@ public class SyncProgressTracker {
             if (tracking && !receivedFirstResponse) {
                 Minecraft mc = Minecraft.getInstance();
                 if (mc.player != null) {
-                    // 根据服务端安装状态显示不同错误
+                    // Two different problems, two different messages.
                     if (MapPacketReceiver.isServerInstalled()) {
-                        // 服务端已安装但响应超时，可能是网络问题或服务端处理出错
+                        // Server has MapSyncer but has not replied: a network or server-side problem.
                         mc.player.sendSystemMessage(ChatUtils.error("mapsyncer.sync.timeout"));
                     } else {
-                        // 服务端未安装
+                        // Server does not have MapSyncer at all.
                         mc.player.sendSystemMessage(ChatUtils.error("mapsyncer.sync.server_not_installed"));
                     }
                 }
@@ -115,12 +115,12 @@ public class SyncProgressTracker {
     }
 
     /**
-     * 更新同步进度。
-     * 接收服务端发送的进度信息，显示进度更新。
+     * Records progress.
+     * Called with each progress update the server sends.
      *
-     * @param processed 已处理的区域数
-     * @param total 总区域数
-     * @param status 当前状态描述
+     * @param processed regions handled so far
+     * @param total regions in total
+     * @param status what the sync is doing right now
      */
     public static void update(int processed, int total, String status) {
         if (!receivedFirstResponse) {
@@ -132,7 +132,7 @@ public class SyncProgressTracker {
         SyncProgressTracker.total = total;
         SyncProgressTracker.status = status;
 
-        // 每次进度更新都显示
+        // Every update is shown.
         if (total > 0) {
             int percent = (processed * 100) / total;
             int interval = ClientConfig.VALUES.syncProgressChatIntervalPercent;
@@ -144,18 +144,18 @@ public class SyncProgressTracker {
     }
 
     /**
-     * 标记同步完成。
-     * 显示完成消息，包含总区域数和耗时。
+     * Marks the sync finished.
+     * Reports the region count and how long it took.
      */
     public static void complete() {
         completeWithCount(total);
     }
 
     /**
-     * 标记同步完成，使用指定的区域数量。
-     * 用于在收到最终响应时显示实际接收的区域数量。
+     * Marks the sync finished, with an explicit region count.
+     * Used on the final response, so the count is what was actually received.
      *
-     * @param count 实际接收的区域数量
+     * @param count regions actually received
      */
     public static void completeWithCount(int count) {
         tracking = false;
@@ -172,8 +172,8 @@ public class SyncProgressTracker {
     }
 
     /**
-     * 取消进度追踪。
-     * 在同步被中断或取消时调用。
+     * Stops tracking.
+     * Called when a sync is interrupted or cancelled.
      */
     public static void cancelTracking() {
         tracking = false;
@@ -183,8 +183,8 @@ public class SyncProgressTracker {
     }
 
     /**
-     * 停止超时检查器。
-     * 取消当前超时任务，但保留线程池供下次使用。
+     * Disarms the timeout check.
+     * Cancels the current task but keeps the executor for next time.
      */
     private static void stopTimeoutChecker() {
         if (timeoutFuture != null && !timeoutFuture.isDone()) {
@@ -194,8 +194,8 @@ public class SyncProgressTracker {
     }
 
     /**
-     * 关闭线程池（服务器停止时调用）。
-     * 用于完全释放资源。
+     * Shuts the executor down, when the client is closing.
+     * Releases the thread entirely.
      */
     public static void shutdown() {
         stopTimeoutChecker();
@@ -206,8 +206,8 @@ public class SyncProgressTracker {
     }
 
     /**
-     * 显示当前进度。
-     * 在玩家聊天栏显示进度百分比信息。
+     * Shows the current progress.
+     * Prints the percentage into the player's chat.
      */
     private static void displayProgress() {
         Minecraft mc = Minecraft.getInstance();
@@ -221,9 +221,9 @@ public class SyncProgressTracker {
     }
 
     /**
-     * 检查是否正在追踪进度。
+     * Whether a sync is being tracked.
      *
-     * @return 如果正在追踪返回 true；否则返回 false
+     * @return {@code true} while one is in progress
      */
     public static boolean isTracking() {
         return tracking;
@@ -250,10 +250,10 @@ public class SyncProgressTracker {
     }
 
     /**
-     * 获取同步耗时（秒）。
-     * 从开始追踪到当前的耗时。
+     * How long the sync has been running.
+     * Measured from when tracking started.
      *
-     * @return 耗时（秒）
+     * @return the elapsed time in seconds
      */
     public static long getElapsedSeconds() {
         return (System.currentTimeMillis() - startTime) / 1000;

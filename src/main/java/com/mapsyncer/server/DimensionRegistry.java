@@ -17,81 +17,81 @@ import java.nio.file.Path;
 import java.util.*;
 
 /**
- * 维度注册器 - 在首次执行地图转换时自动检测维度路径并注册到配置文件
+ * Detects the save layout of each dimension on first run and writes it into the config.
  *
- * 功能：
- * 1. 首次执行地图生成时扫描服务器所有已加载维度
- * 2. 自动检测维度使用的路径格式（新格式 dimensions/ 或传统格式 DIM）
- * 3. 对未配置的维度自动添加推荐配置（扫描模式等）
+ * What it does:
+ * 1. scans every loaded dimension the first time a map generation runs
+ * 2. works out which layout that dimension uses (current dimensions/ or legacy DIM)
+ * 3. adds a recommended scan config for any dimension not configured yet
  *
- * Minecraft 1.21+ 路径格式：
- * - 新格式：dimensions/minecraft/overworld/region, dimensions/minecraft/the_nether/region
- * - 传统格式：region/, DIM-1/region/, DIM1/region/, DIM{id}/region/
+ * Layouts on Minecraft 1.21+:
+ * - current: dimensions/minecraft/overworld/region, dimensions/minecraft/the_nether/region
+ * - legacy: region/, DIM-1/region/, DIM1/region/, DIM{id}/region/
  */
 public class DimensionRegistry {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(DimensionRegistry.class);
 
-    /** 是否已执行过首次注册 */
+    /** Whether the one-time registration has already run. */
     private static volatile boolean hasRegistered = false;
 
     /**
-     * 已知维度的推荐配置（系统预设）
+     * Built-in recommended settings for dimensions we know about.
      *
-     * 原版维度使用特定配置，mod维度使用预设或默认地表模式。
-     * 包含维度类型信息用于离线解析时的光照计算和高度范围确定。
+     * Vanilla dimensions get specific settings; modded ones fall back to a preset or to
+     * surface mode. The dimension type info drives lighting and height range when parsing
+     * region files offline.
      */
     private static final Map<String, DimensionScanConfig> PRESET_CONFIGS = new LinkedHashMap<>();
 
     static {
-        // 原版维度预设配置（1.21+ 自动检测路径）
-        // 主世界：地表模式，有天空光照，minY=-64, height=384
+        // Vanilla dimensions; paths are detected at runtime on 1.21+.
+        // Overworld: surface mode, has skylight, minY=-64, height=384
         PRESET_CONFIGS.put("minecraft:overworld",
                 new DimensionScanConfig("minecraft:overworld", ScanMode.SURFACE, 63,
                     DimensionTypeInfo.overworld()));
 
-        // 地狱：洞穴模式，无天空光照，有顶棚，minY=0, height=256
+        // Nether: cave mode, no skylight, has a ceiling, minY=0, height=256
         PRESET_CONFIGS.put("minecraft:the_nether",
                 new DimensionScanConfig("minecraft:the_nether", ScanMode.CAVE, 63,
                     DimensionTypeInfo.nether()));
 
-        // 末地：地表模式，无天空光照，无顶棚，minY=0, height=256
+        // End: surface mode, no skylight, no ceiling, minY=0, height=256
         PRESET_CONFIGS.put("minecraft:the_end",
                 new DimensionScanConfig("minecraft:the_end", ScanMode.SURFACE, 63,
                     DimensionTypeInfo.theEnd()));
 
-        // Mod维度预设配置
-        // Twilight Forest: 地表模式（森林地形），类似主世界
+        // Presets for modded dimensions.
+        // Twilight Forest: forest terrain, so surface mode like the overworld.
         PRESET_CONFIGS.put("twilightforest:twilight_forest",
                 new DimensionScanConfig("twilightforest:twilight_forest", ScanMode.SURFACE, 63,
                     new DimensionTypeInfo(true, false, 0, 256, 256)));
 
-        // Aether: 天空维度，使用地表模式
+        // Aether: a sky dimension, surface mode.
         PRESET_CONFIGS.put("aether:the_aether",
                 new DimensionScanConfig("aether:the_aether", ScanMode.SURFACE, 63,
                     new DimensionTypeInfo(true, false, 0, 256, 256)));
 
-        // Betweenlands: 地下沼泽维度，可能需要洞穴模式
+        // Betweenlands: an underground swamp, cave mode suits it.
         PRESET_CONFIGS.put("thebetweenlands:betweenlands",
                 new DimensionScanConfig("thebetweenlands:betweenlands", ScanMode.CAVE, 32,
                     new DimensionTypeInfo(false, true, 0, 256, 256)));
 
-        // Erebus: 昆虫洞穴维度，使用洞穴模式
+        // Erebus: insect caves, cave mode.
         PRESET_CONFIGS.put("erebus:erebus",
                 new DimensionScanConfig("erebus:erebus", ScanMode.CAVE, 32,
                     new DimensionTypeInfo(false, true, 0, 256, 256)));
     }
 
     /**
-     * 在首次执行地图转换时注册所有维度到配置文件
+     * Registers every dimension in the config, once, on the first map conversion.
      *
-     * 自动检测每个维度的实际路径格式并写入配置文件。
-     * 只在首次执行时运行，后续调用会跳过。
+     * Detects each dimension's actual layout and writes it out. Later calls do nothing.
      *
-     * @param server MinecraftServer实例
+     * @param server the running server
      */
     public static void registerAllDimensions(MinecraftServer server) {
-        // 防止重复注册
+        // Only ever run once.
         if (hasRegistered) {
             LOGGER.debug("Dimensions already registered, skipping");
             return;
@@ -99,17 +99,17 @@ public class DimensionRegistry {
 
         LOGGER.info("Starting dimension registration on first map generation...");
 
-        // 获取世界根目录
+        // The world's save root.
         Path worldRoot = server.getWorldPath(LevelResource.ROOT);
 
-        // 使用 DimensionPathMapping 扫描并注册所有维度路径
+        // Let DimensionPathMapping find and record every dimension path.
         DimensionPathMapping mapping = DimensionPathMapping.getInstance();
         mapping.scanAndRegisterDimensions(worldRoot);
 
-        // 获取当前配置列表
+        // What is configured right now.
         List<String> currentConfigs = ModConfig.SERVER.dimensionConfigs;
 
-        // 解析为 DimensionScanConfig 对象便于匹配
+        // Parsed, so dimensions can be matched by ID.
         Set<String> configuredDimensions = new HashSet<>();
         for (DimensionScanConfig config : ModConfig.SERVER.parseDimensionConfigs()) {
             configuredDimensions.add(normalizeDimensionId(config.dimension()));
@@ -117,7 +117,7 @@ public class DimensionRegistry {
 
         LOGGER.info("Currently configured dimensions: {}", configuredDimensions);
 
-        // 扫描服务器所有已加载维度
+        // Every dimension the server has loaded.
         Set<String> newDimensions = new LinkedHashSet<>();
         for (ServerLevel level : server.getAllLevels()) {
             ResourceKey<Level> dimKey = level.dimension();
@@ -126,7 +126,7 @@ public class DimensionRegistry {
             String normalizedId = normalizeDimensionId(dimId);
 
             if (!configuredDimensions.contains(normalizedId)) {
-                // 该维度未配置，需要添加
+                // Not configured yet, so it needs adding.
                 newDimensions.add(dimId);
                 LOGGER.info("Found unconfigured dimension: {} (normalized: {})", dimId, normalizedId);
             }
@@ -138,15 +138,15 @@ public class DimensionRegistry {
             return;
         }
 
-        // 创建新的配置列表（保留原有配置 + 新增配置）
+        // Existing config plus whatever is new.
         List<String> updatedConfigs = new ArrayList<>(currentConfigs);
 
-        // 添加新发现的维度（1.21+ 自动检测路径）
+        // Add the dimensions that were found (paths auto-detected on 1.21+).
         for (String dimId : newDimensions) {
-            // 获取推荐配置（扫描模式等）
+        // Recommended settings, e.g. the scan mode.
             DimensionScanConfig preset = getRecommendedConfig(dimId);
 
-            // 从 ServerLevel 获取真实的维度类型信息
+        // Take the real dimension type from the running ServerLevel.
             ServerLevel level = getLevelForDimension(server, dimId);
             DimensionTypeInfo dimTypeInfo;
             if (level != null) {
@@ -155,11 +155,11 @@ public class DimensionRegistry {
                     dimId, dimTypeInfo.hasSkylight(), dimTypeInfo.hasCeiling(),
                     dimTypeInfo.minY(), dimTypeInfo.height());
             } else {
-                // 无法获取维度信息，使用预设或推断值
+                // No level available; fall back to the preset or an inferred value.
                 dimTypeInfo = preset.dimTypeInfo() != null ? preset.dimTypeInfo() : DimensionTypeInfo.fromDimensionId(dimId);
             }
 
-            // 使用推荐配置和维度类型信息创建最终配置
+        // Combine the recommendation with the dimension type info.
             DimensionScanConfig finalConfig = new DimensionScanConfig(
                     dimId,
                     preset.scanMode(),
@@ -173,10 +173,10 @@ public class DimensionRegistry {
                     dimId, finalConfig.scanMode(), dimTypeInfo.hasSkylight());
         }
 
-        // 更新配置值
+        // Update the config value.
         ModConfig.SERVER.dimensionConfigs = updatedConfigs;
 
-        // 保存配置文件
+        // And write it out.
         ModConfig.save();
 
         hasRegistered = true;
@@ -185,7 +185,7 @@ public class DimensionRegistry {
     }
 
     /**
-     * 重置注册状态（用于测试或重新扫描）
+     * Clears the registration flag, for tests or a forced rescan.
      */
     public static void resetRegistration() {
         hasRegistered = false;
@@ -194,21 +194,21 @@ public class DimensionRegistry {
     }
 
     /**
-     * 规范化维度ID（移除minecraft:前缀，转小写）
+     * Normalises a dimension ID: drops the {@code minecraft:} prefix and lowercases it.
      *
-     * @param dimId 维度ID
-     * @return 规范化后的维度ID
+     * @param dimId the dimension ID
+     * @return the normalised ID
      */
     private static String normalizeDimensionId(String dimId) {
         return dimId.replace("minecraft:", "").toLowerCase();
     }
 
     /**
-     * 获取维度的ServerLevel实例
+     * Finds the ServerLevel for a dimension ID.
      *
-     * @param server MinecraftServer实例
-     * @param dimId 维度ID（如"minecraft:overworld"）
-     * @return ServerLevel实例，未找到返回null
+     * @param server the running server
+     * @param dimId the dimension ID, e.g. {@code "minecraft:overworld"}
+     * @return the level, or {@code null} if it is not loaded
      */
     private static ServerLevel getLevelForDimension(MinecraftServer server, String dimId) {
         for (ServerLevel level : server.getAllLevels()) {
@@ -220,32 +220,32 @@ public class DimensionRegistry {
     }
 
     /**
-     * 获取维度的推荐配置（扫描模式等）
+     * Recommended settings for a dimension, such as its scan mode.
      *
-     * @param dimId 维度ID
-     * @return 推荐的维度扫描配置
+     * @param dimId the dimension ID
+     * @return the recommended scan config
      */
     private static DimensionScanConfig getRecommendedConfig(String dimId) {
-        // 检查是否有预设配置（扫描模式和维度类型信息）
+        // Use a preset if we have one (scan mode plus dimension type info).
         for (Map.Entry<String, DimensionScanConfig> entry : PRESET_CONFIGS.entrySet()) {
             if (normalizeDimensionId(entry.getKey()).equals(normalizeDimensionId(dimId))) {
                 return entry.getValue();
             }
         }
 
-        // 非原版维度：使用默认地表模式，维度类型信息自动推断
+        // Otherwise: surface mode, with the dimension type inferred.
         return new DimensionScanConfig(dimId, ScanMode.SURFACE, 63,
             DimensionTypeInfo.fromDimensionId(dimId));
     }
 
     /**
-     * 将DimensionScanConfig转换为字符串格式（用于配置文件）
+     * Formats a DimensionScanConfig as the string stored in the config file.
      *
-     * 格式：dimension|scan_mode|cave_start|dim_type_info
-     * dim_type_info格式：hasSkylight|hasCeiling|minY|height|logicalHeight
+     * Format: dimension|scan_mode|cave_start|dim_type_info
+     * where dim_type_info is: hasSkylight|hasCeiling|minY|height|logicalHeight
      *
-     * @param config 维度扫描配置
-     * @return 配置字符串
+     * @param config the scan config
+     * @return the config string
      */
     private static String configToString(DimensionScanConfig config) {
         StringBuilder sb = new StringBuilder();
@@ -253,7 +253,7 @@ public class DimensionRegistry {
         sb.append("|").append(config.scanMode().name());
         sb.append("|").append(config.caveStart());
 
-        // 添加维度类型信息
+        // Append the dimension type info.
         if (config.dimTypeInfo() != null) {
             sb.append("|").append(config.dimTypeInfo().toConfigString());
         }
@@ -262,21 +262,21 @@ public class DimensionRegistry {
     }
 
     /**
-     * 将维度ID转换为用户友好名称（使用标准名称）
+     * A dimension ID in its friendly form.
      *
-     * @param dimId 维度ID
-     * @return 用户友好的维度名称
+     * @param dimId the dimension ID
+     * @return the name without the {@code minecraft:} prefix
      */
     private static String toFriendlyName(String dimId) {
         String normalized = normalizeDimensionId(dimId);
-        // 直接返回标准名称（移除 minecraft: 前缀）
+        // Just the standard name, minus the minecraft: prefix.
         return normalized;
     }
 
     /**
-     * 检查是否已注册过维度
+     * Whether dimensions have been registered.
      *
-     * @return true表示已注册，false表示未注册
+     * @return {@code true} once registration has run
      */
     public static boolean isRegistered() {
         return hasRegistered;

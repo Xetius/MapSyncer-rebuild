@@ -14,10 +14,11 @@ import java.util.Properties;
 import java.util.Set;
 
 /**
- * 缓存服务端同步过来的 region 时间戳和同步状态。
- * 用于下次同步时比较，避免因客户端文件修改时间变化导致的误同步。
+ * Remembers the region timestamps the server sent, and how far the last sync got.
+ * Compared on the next sync, so a region is not re-fetched just because the local file's
+ * modification time changed.
  *
- * <p>缓存格式（合并文件）：</p>
+ * <p>The file, which holds both state and timestamps:</p>
  * <pre>
  * # Sync timestamps cache
  * _state = in_progress
@@ -27,77 +28,77 @@ import java.util.Set;
  * null/1_0 = 1234567891:def45678
  * </pre>
  *
- * <p>同步状态设计（简化版）：</p>
+ * <p>Sync state, kept deliberately simple:</p>
  * <ul>
- *   <li>只有两种状态：in_progress（同步进行中）和 completed（同步完成）</li>
- *   <li>开始同步时标记为 in_progress</li>
- *   <li>完成同步后标记为 completed</li>
- *   <li>断开连接不改变状态（保持 in_progress）</li>
- *   <li>加入游戏时如果状态为 in_progress，显示断点续传提示</li>
- *   <li>如果缓存文件不存在，说明从未同步过，跳过检测</li>
+ *   <li>two states only: in_progress and completed</li>
+ *   <li>set to in_progress when a sync starts</li>
+ *   <li>set to completed when it finishes</li>
+ *   <li>disconnecting changes nothing, so it stays in_progress</li>
+ *   <li>on joining, an in_progress state prompts the player to resume</li>
+ *   <li>no cache file at all means this world has never been synced, so nothing is checked</li>
  * </ul>
  */
 public class ClientTimestampCache {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ClientTimestampCache.class);
 
-    /** 缓存文件名称（合并状态和时间戳） */
+    /** The cache file, which holds both the state and the timestamps. */
     private static final String CACHE_FILE_NAME = "sync_timestamps.cache";
 
-    /** 状态键前缀（用于区分状态信息和区域缓存） */
+    /** Prefix marking the state keys apart from the region entries. */
     private static final String KEY_STATE = "_state";
     private static final String KEY_DIMENSIONS = "_dimensions";
     private static final String KEY_COMMAND = "_command";
     private static final int SAVE_EVERY_UPDATES = 50;
     private static final long SAVE_EVERY_MS = 10_000L;
 
-    /** 同步状态：同步进行中（断点续传可用） */
+    /** Sync state: in progress, so it can be resumed. */
     public static final String SYNC_STATE_IN_PROGRESS = "in_progress";
 
-    /** 同步状态：同步完成 */
+    /** Sync state: finished. */
     public static final String SYNC_STATE_COMPLETED = "completed";
 
-    /** 单例实例 */
+    /** The single instance. */
     private static volatile ClientTimestampCache instance;
 
-    /** 上次使用的服务器目录 */
+    /** The server directory last used. */
     private static volatile Path lastBaseDir = null;
 
     /**
-     * 获取上次使用的服务器目录。
+     * The server directory last used.
      *
-     * @return 上次使用的服务器目录，如果不存在返回 null
+     * @return that directory, or {@code null} if there is none
      */
     public static Path getLastBaseDir() {
         return lastBaseDir;
     }
 
-    /** 缓存文件路径 */
+    /** Path to the cache file. */
     private final Path cacheFile;
 
-    /** 缓存数据，键为相对路径（如 "null/0_0"），值为缓存条目 */
+    /** The cache: relative path, e.g. "null/0_0", to its entry. */
     private final Map<String, CacheEntry> cache = new HashMap<>();
 
-    /** 当前同步状态（null 表示从未同步过） */
+    /** The current sync state; {@code null} means this world has never been synced. */
     private volatile String syncState = null;
 
-    /** 同步涉及的维度列表 */
+    /** Dimensions covered by the sync. */
     private volatile Set<String> syncDimensions = new HashSet<>();
 
-    /** 同步指令（用于断点续传提示） */
+    /** The command that started the sync, quoted back when offering to resume. */
     private volatile String syncCommand = "";
     private int unsavedUpdates = 0;
     private long lastSaveMillis = 0L;
 
     /**
-     * 缓存条目：时间戳(秒) + CRC32哈希。
+     * One cache entry: a timestamp in seconds plus the CRC32 hash.
      *
-     * @param timestampSeconds 时间戳（秒）
-     * @param hash CRC32哈希值（8位十六进制）
+     * @param timestampSeconds the timestamp, in seconds
+     * @param hash the CRC32, as eight hex characters
      */
     public record CacheEntry(long timestampSeconds, String hash) {
         /**
-         * 从字符串解析缓存条目。
+         * Parses a stored entry.
          */
         public static CacheEntry parse(String value) {
             TimestampHashEntry entry = PropertiesCacheIO.parseTimestampHash(value);
@@ -105,7 +106,7 @@ public class ClientTimestampCache {
         }
 
         /**
-         * 将缓存条目格式化为字符串。
+         * Formats this entry for storage.
          */
         public String format() {
             return timestampSeconds + ":" + hash;
@@ -113,7 +114,7 @@ public class ClientTimestampCache {
     }
 
     /**
-     * 私有构造函数，初始化缓存实例。
+     * Creates the cache for one server directory.
      */
     private ClientTimestampCache(Path baseDir) {
         this.cacheFile = baseDir.resolve(CACHE_FILE_NAME);
@@ -122,7 +123,7 @@ public class ClientTimestampCache {
     }
 
     /**
-     * 获取缓存实例。
+     * The shared instance.
      */
     public static ClientTimestampCache getInstance(Path baseDir) {
         if (baseDir == null) {
@@ -142,7 +143,7 @@ public class ClientTimestampCache {
     }
 
     /**
-     * 重置实例。
+     * Drops the instance.
      */
     public static synchronized void resetInstance() {
         if (instance != null) {
@@ -160,7 +161,7 @@ public class ClientTimestampCache {
     }
 
     /**
-     * 从文件加载缓存（包含状态和区域时间戳）。
+     * Loads the cache file: state and region timestamps.
      */
     private void load() {
         if (!Files.exists(cacheFile)) {
@@ -175,7 +176,7 @@ public class ClientTimestampCache {
                 props.load(in);
             }
 
-            // 加载状态信息（特殊键）
+            // The state keys.
             syncState = props.getProperty(KEY_STATE, null);
             String dimsStr = props.getProperty(KEY_DIMENSIONS, "");
             syncDimensions = new HashSet<>();
@@ -186,7 +187,7 @@ public class ClientTimestampCache {
             }
             syncCommand = props.getProperty(KEY_COMMAND, "");
 
-            // 加载区域缓存（非特殊键）
+            // And the region entries.
             for (String key : props.stringPropertyNames()) {
                 if (!key.startsWith("_")) {
                     CacheEntry entry = CacheEntry.parse(props.getProperty(key));
@@ -204,7 +205,7 @@ public class ClientTimestampCache {
     }
 
     /**
-     * 保存缓存到文件（包含状态和区域时间戳）。
+     * Writes the cache file: state and region timestamps.
      */
     public synchronized void save() {
         try {
@@ -212,20 +213,20 @@ public class ClientTimestampCache {
 
             Properties props = new Properties();
 
-            // 保存状态信息
+            // The state.
             if (syncState != null) {
                 props.setProperty(KEY_STATE, syncState);
             }
             props.setProperty(KEY_DIMENSIONS, String.join(",", syncDimensions));
             props.setProperty(KEY_COMMAND, syncCommand);
 
-            // 保存区域缓存
+            // The region entries.
             for (Map.Entry<String, CacheEntry> entry : cache.entrySet()) {
                 props.setProperty(entry.getKey(), entry.getValue().format());
             }
 
             try (var out = Files.newOutputStream(cacheFile)) {
-                // 先写入状态信息
+                // State first.
                 StringBuilder content = new StringBuilder();
                 content.append("# Sync timestamps cache\n");
                 content.append("# ==================== STATE ====================\n");
@@ -238,7 +239,7 @@ public class ClientTimestampCache {
                 content.append("# ==================== TIMESTAMP CACHE ====================\n");
                 content.append("# Format: dimension/region_x_z = timestamp_seconds:hash\n");
 
-                // 写入区域缓存
+                // Then the regions.
                 for (Map.Entry<String, CacheEntry> entry : cache.entrySet()) {
                     content.append(entry.getKey()).append("=").append(entry.getValue().format()).append("\n");
                 }
@@ -263,7 +264,7 @@ public class ClientTimestampCache {
     }
 
     /**
-     * 标记同步开始。
+     * Marks a sync as started.
      */
     public synchronized void markSyncStart(Set<String> dimensions, String command) {
         syncState = SYNC_STATE_IN_PROGRESS;
@@ -274,7 +275,7 @@ public class ClientTimestampCache {
     }
 
     /**
-     * 标记同步完成。
+     * Marks a sync as finished.
      */
     public synchronized void markSyncComplete() {
         syncState = SYNC_STATE_COMPLETED;
@@ -283,7 +284,7 @@ public class ClientTimestampCache {
     }
 
     /**
-     * 清除同步状态（用户忽略断点续传提示时调用）。
+     * Clears the sync state, when the player declines to resume.
      */
     public synchronized void clearSyncState() {
         syncState = SYNC_STATE_COMPLETED;
@@ -294,59 +295,59 @@ public class ClientTimestampCache {
     }
 
     /**
-     * 获取当前同步状态。
+     * The current sync state.
      */
     public synchronized String getSyncState() {
         return syncState;
     }
 
     /**
-     * 获取同步指令。
+     * The command that started the sync.
      */
     public synchronized String getSyncCommand() {
         return syncCommand;
     }
 
     /**
-     * 检查是否需要断点续传。
+     * Whether there is a sync worth resuming.
      */
     public synchronized boolean needsResume() {
         return SYNC_STATE_IN_PROGRESS.equals(syncState);
     }
 
     /**
-     * 获取同步涉及的维度集合。
+     * The dimensions covered by the sync.
      */
     public synchronized Set<String> getSyncDimensions() {
         return new HashSet<>(syncDimensions);
     }
 
     /**
-     * 更新区域的缓存信息。
+     * Records a region's timestamp and hash.
      */
     public synchronized void update(String relativePath, long timestampSeconds, String hash) {
         cache.put(relativePath, new CacheEntry(timestampSeconds, hash));
     }
 
     /**
-     * 获取区域的缓存信息。
+     * Looks up a region's entry.
      */
     public synchronized CacheEntry get(String relativePath) {
         return cache.get(relativePath);
     }
 
     /**
-     * 获取所有缓存数据。
+     * Every cached entry.
      *
-     * <p>返回不可修改视图，避免创建完整副本浪费内存。</p>
-     * <p>如果需要修改数据，请使用 update() 方法。</p>
+     * <p>An unmodifiable view rather than a copy, so reading it is cheap.</p>
+     * <p>Use {@link #update} to change anything.</p>
      */
     public synchronized Map<String, CacheEntry> getAll() {
         return new HashMap<>(cache);
     }
 
     /**
-     * 清空缓存数据。
+     * Empties the cache.
      */
     public synchronized void clear() {
         clearInMemory();
@@ -366,7 +367,7 @@ public class ClientTimestampCache {
     }
 
     /**
-     * 检查指定维度是否已同步过。
+     * Whether a dimension has been synced before.
      */
     public synchronized boolean hasDimensionSynced(String xaeroDim) {
         String prefix = xaeroDim + "/";
@@ -379,14 +380,14 @@ public class ClientTimestampCache {
     }
 
     /**
-     * 检查缓存文件是否存在。
+     * Whether the cache file exists.
      */
     public boolean cacheFileExists() {
         return Files.exists(cacheFile);
     }
 
     /**
-     * 获取缓存文件路径。
+     * Path to the cache file.
      */
     public Path getCacheFile() {
         return cacheFile;

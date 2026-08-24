@@ -12,38 +12,36 @@ import java.time.LocalTime;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * 增量更新处理器 - 负责定时扫描并更新已修改的区域地图
+ * Rescans and regenerates map regions that have changed since the last pass.
  *
- * 支持两种更新模式：
- * - TICK模式：每隔指定tick数执行一次增量扫描
- * - SCHEDULED模式：每天在指定时间执行增量扫描
+ * Two modes:
+ * - TICK: run a scan every N ticks
+ * - SCHEDULED: run a scan once a day at a set time
  *
- * 通过MCA文件时间戳检测哪些区域需要重新生成，
- * 仅更新有变化的区域以提高效率。
+ * Which regions need regenerating is decided from {@code .mca} file timestamps, so only
+ * changed regions are converted.
  */
 public class IncrementalUpdateHandler {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(IncrementalUpdateHandler.class);
 
-    /** 单例实例 */
+    /** The single instance. */
     private static volatile IncrementalUpdateHandler instance;
 
-    /** Minecraft服务器实例 */
+    /** The running server. */
     private volatile MinecraftServer server;
 
-    /** 处理器是否正在运行 */
+    /** Whether scans are currently scheduled. */
     private volatile boolean running = false;
 
-    /** Tick计数器，用于TICK模式计时 */
+    /** Tick counter used by TICK mode. */
     private final AtomicInteger tickCounter = new AtomicInteger(0);
 
-    /** 上次计划更新的时间，用于防止同一天多次执行 */
+    /** When the last scheduled run happened, so a day cannot fire twice. */
     private volatile LocalDateTime lastScheduledUpdate = null;
 
     /**
-     * 获取单例实例
-     *
-     * @return 增量更新处理器实例
+     * @return the shared instance
      */
     public static IncrementalUpdateHandler getInstance() {
         if (instance == null) {
@@ -57,9 +55,9 @@ public class IncrementalUpdateHandler {
     }
 
     /**
-     * 启动增量更新处理器
+     * Starts scheduling incremental scans.
      *
-     * @param server Minecraft服务器实例
+     * @param server the running server
      */
     public void start(MinecraftServer server) {
         if (running) {
@@ -84,7 +82,7 @@ public class IncrementalUpdateHandler {
     }
 
     /**
-     * 停止增量更新处理器
+     * Stops scheduling incremental scans.
      */
     public void stop() {
         running = false;
@@ -95,30 +93,23 @@ public class IncrementalUpdateHandler {
     }
 
     /**
-     * 检查处理器是否正在运行
-     *
-     * @return true表示正在运行，false表示已停止
+     * @return whether scans are currently scheduled
      */
     public boolean isRunning() {
         return running;
     }
 
     /**
-     * 获取当前tick计数
-     *
-     * @return tick计数器值
+     * @return the current tick counter
      */
     public int getTickCounter() {
         return tickCounter.get();
     }
 
     /**
-     * 服务器Tick事件处理
+     * Server tick: checks whether the configured mode is due for a scan.
      *
-     * 每个服务器tick都会调用此方法，根据配置的更新模式
-     * 检查是否需要执行增量扫描。
-     *
-     * @param event 服务器Tick后事件
+     * @param server the server
      */
     public static void onServerTick(MinecraftServer server) {
         IncrementalUpdateHandler handler = getInstance();
@@ -141,7 +132,7 @@ public class IncrementalUpdateHandler {
     }
 
     /**
-     * 检查TICK模式是否需要执行更新
+     * Whether TICK mode is due for a scan.
      */
     private void checkTickMode() {
         int interval = ModConfig.SERVER.incrementalUpdateIntervalTicks;
@@ -154,9 +145,9 @@ public class IncrementalUpdateHandler {
     }
 
     /**
-     * 检查SCHEDULED模式是否需要执行更新
+     * Whether SCHEDULED mode is due for a scan.
      *
-     * 在目标时间前后1分钟的窗口内检查，确保只在每天执行一次。
+     * Fires inside a one-minute window around the configured time, at most once a day.
      */
     private void checkScheduledMode() {
         LocalDateTime now = LocalDateTime.now();
@@ -176,9 +167,9 @@ public class IncrementalUpdateHandler {
     }
 
     /**
-     * 执行计划更新
+     * Runs one incremental scan.
      *
-     * @param reason 更新原因描述
+     * @param reason what triggered it, for the log
      */
     private void performScheduledUpdate(String reason) {
         LOGGER.info("Queueing incremental update: {}", reason);
@@ -200,11 +191,9 @@ public class IncrementalUpdateHandler {
     }
 
     /**
-     * 获取处理器状态信息
+     * Current state and when the next scan is expected, as shown by {@code /mapsyncer status}.
      *
-     * 返回当前状态和下次更新的预计时间，用于status命令显示。
-     *
-     * @return 状态信息字符串
+     * @return a human-readable status line
      */
     public String getStatusInfo() {
         if (!running) {
@@ -238,9 +227,7 @@ public class IncrementalUpdateHandler {
     }
 
     /**
-     * 重置单例实例以释放内存
-     *
-     * 在服务器停止时调用，防止专用服务器重启时的内存泄漏。
+     * Drops the instance so a server restart does not keep the old one alive.
      */
     public static void resetInstance() {
         if (instance != null) {

@@ -46,7 +46,7 @@ public class MapSyncerClient implements ClientModInitializer {
 
         ClientPlayNetworking.registerGlobalReceiver(PacketHandler.OpenGuiPayload.TYPE,
                 (payload, context) -> context.client().execute(() ->
-                        context.client().setScreen(new MapSyncerScreen())));
+                        context.client().setScreenAndShow(new MapSyncerScreen())));
 
         ClientPlayNetworking.registerGlobalReceiver(PacketHandler.PublicWaypointsPayload.TYPE,
                 PublicWaypointReceiver::handle);

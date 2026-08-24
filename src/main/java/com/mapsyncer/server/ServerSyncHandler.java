@@ -1,18 +1,17 @@
 package com.mapsyncer.server;
 
-import com.mapsyncer.config.ModConfig;
 import com.mapsyncer.config.ModConfig.RadiusSyncCenterMode;
+import com.mapsyncer.config.ModConfig;
 import com.mapsyncer.network.ChunkMapData;
 import com.mapsyncer.network.ClientMeta;
 import com.mapsyncer.network.PacketHandler;
+import com.mapsyncer.platform.MapSyncerPlatform;
+import com.mapsyncer.platform.Platform;
 import com.mapsyncer.server.GenerationCache.RegionMeta;
 import com.mapsyncer.util.ChatUtils;
 import com.mapsyncer.util.DimensionPathMapping;
 import com.mapsyncer.util.HashUtils;
 import com.mapsyncer.util.MapSyncerExecutors;
-import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
-import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
-import net.minecraft.commands.Commands;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerPlayer;
@@ -39,70 +38,71 @@ import java.util.concurrent.Future;
 import java.util.stream.Stream;
 
 /**
- * 服务端同步处理器 - 处理客户端请求的地图数据同步
+ * Serves map data to clients that ask for it.
  *
- * 功能：
- * - 接收客户端同步请求，包含客户端缓存的元数据（时间戳+哈希）
- * - 比对服务端缓存与客户端元数据，确定需要同步的区域
- * - 分批发送差异区域数据到客户端
- * - 支持速度限制，避免网络拥塞
+ * What it does:
+ * - receives a sync request carrying the client's per-region timestamps and hashes
+ * - compares that against the server cache to work out what the client is missing
+ * - sends the missing regions in batches
+ * - throttles the stream so it does not saturate the connection
  *
- * 同步逻辑（基于哈希比对，自动断点续传）：
- * 1. 哈希值一致 → 不同步（文件内容相同）
- * 2. 哈希值不一致 + 客户端时间戳旧于服务端 → 同步
- * 3. 哈希值不一致 + 客户端时间戳新于服务端 → 不同步（客户端有新数据）
- * 4. 客户端无该区域的元数据 → 同步（新区域）
+ * What gets sent (hash comparison, which also gives resume for free):
+ * 1. hashes match: skip, the client already has this exact data
+ * 2. hashes differ and the client's copy is older: send it
+ * 3. hashes differ but the client's copy is newer: skip, the client is ahead
+ * 4. the client has no metadata for the region: send it, it is new to them
  *
- * 断点续传机制：
- * - 完全依赖哈希比对，客户端时间戳缓存（sync_timestamps.cache）记录已接收区域
- * - 断线重连后，客户端发送已接收区域的哈希，服务端比对后只同步差异
- * - 无需服务端保留进度索引，简化实现并避免内存泄漏
+ * Resuming after a disconnect:
+ * - falls out of the hash comparison; the client records what it received in
+ *   sync_timestamps.cache and reports those hashes when it reconnects
+ * - the server keeps no progress index of its own, which keeps this simple and leak-free
  */
 public class ServerSyncHandler {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ServerSyncHandler.class);
 
-    /** 最大数据包大小上限（1MB），避免超过 Fabric 网络限制 */
+    /** Hard ceiling on payload size (1MB), the vanilla custom payload limit. */
     private static final int MAX_PACKET_SIZE_LIMIT = 1_000_000;
 
     /**
-     * 获取最大单包大小（用于拆包）。
-     * 这是每个网络包的大小限制。
+     * Largest payload to send, which is what regions get split against.
+     * The configured value, capped by both the vanilla limit and the platform's.
      *
-     * @return 最大单包大小（字节）
+     * @return the maximum payload size in bytes
      */
     private static int getMaxPacketSize() {
         int configValue = ModConfig.SERVER.maxSyncPacketSize;
-        return Math.min(configValue, MAX_PACKET_SIZE_LIMIT);
+        int platformLimit = Platform.get().maxPayloadBytes();
+        return Math.min(configValue, Math.min(MAX_PACKET_SIZE_LIMIT, platformLimit));
     }
 
     /**
-     * 获取批次累积阈值（目标每秒发送量）。
-     * 当有限速时，将限速值向下取整到整包大小，确保每秒发送整数个完整包。
-     * 无限速时，阈值 = 最大包大小。
+     * How many bytes to accumulate before sending, i.e. the target bytes per second.
+     * Under a speed limit this rounds down to a whole number of full payloads, so each
+     * second carries whole payloads. Unthrottled it is just the maximum payload size.
      *
-     * @return 批次累积阈值（字节）
+     * @return the batch threshold in bytes
      */
     private static int getBatchThreshold(ServerPlayer player, UUID playerId) {
         int limitKBps = getEffectiveLimitKBps(player, playerId);
         if (limitKBps <= 0) {
-            // 无限速：使用最大包大小
+            // No limit: one full payload.
             return getMaxPacketSize();
         }
 
-        // 有限速：向下取整到整包大小
+        // Limited: round down to whole payloads.
         int maxPacketSize = getMaxPacketSize();
         int limitBytesPerSec = limitKBps * 1024;
 
-        // 计算每秒可发送的完整包数（向下取整）
+        // Whole payloads per second, rounded down.
         int packetsPerSecond = limitBytesPerSec / maxPacketSize;
 
-        // 至少允许发送一个包，否则无法发送任何数据
+        // Always allow at least one, or nothing would ever be sent.
         if (packetsPerSecond < 1) {
             packetsPerSecond = 1;
         }
 
-        // 实际限速 = 整包数 × 包大小
+        // Effective rate: whole payloads times payload size.
         int actualThreshold = packetsPerSecond * maxPacketSize;
 
         LOGGER.debug("Speed limit adjusted: {} KB/s -> {} packets/s x {} KB = {} KB/s",
@@ -112,48 +112,47 @@ public class ServerSyncHandler {
     }
 
     /**
-     * 将批次数据按包大小限制拆分发送。
-     * 当批次数据超过单包大小限制时，拆成多个包发送。
+     * Sends a batch, splitting it across payloads if it exceeds the size limit.
      *
-     * @param batch 待发送的数据列表
-     * @param batchBytes 批次总字节数
-     * @param serverPlayer 玩家实例
-     * @param worldId 世界ID
-     * @param processed 已处理数量
-     * @param total 总数量
-     * @return 发送的包数量
+     * @param batch the regions to send
+     * @param batchBytes total size of the batch
+     * @param serverPlayer the recipient
+     * @param worldId the world ID
+     * @param processed regions handled so far
+     * @param total regions in total
+     * @return how many payloads were sent
      */
     private static int sendBatchInChunks(List<ChunkMapData> batch, int batchBytes,
             ServerPlayer serverPlayer, int worldId, int processed, int total) {
         int maxPacketSize = getMaxPacketSize();
 
         if (batchBytes <= maxPacketSize) {
-            // 单包发送
+            // Fits in one payload.
             final List<ChunkMapData> batchToSend = new ArrayList<>(batch);
             serverPlayer.level().getServer().execute(() -> {
-                ServerPlayNetworking.send(serverPlayer,
+                Platform.send(serverPlayer,
                         new PacketHandler.SyncResponsePayload(batchToSend, false, worldId, "ok"));
-                ServerPlayNetworking.send(serverPlayer,
+                Platform.send(serverPlayer,
                         new PacketHandler.SyncProgressPayload(processed, total,
                                 String.format("Sending regions %d/%d", processed, total)));
             });
             return 1;
         }
 
-        // 拆成多个包发送
+        // Otherwise split it up.
         List<ChunkMapData> currentChunk = new ArrayList<>();
         int currentSize = 0;
         int packetCount = 0;
 
         for (ChunkMapData chunk : batch) {
-            // 如果当前块加上这个数据超过限制，先发送当前块
+            // Adding this region would overflow the payload, so flush what we have.
             if (currentSize + chunk.data.length > maxPacketSize && !currentChunk.isEmpty()) {
                 final List<ChunkMapData> chunkToSend = new ArrayList<>(currentChunk);
                 final int sentProgress = processed + packetCount;
                 serverPlayer.level().getServer().execute(() -> {
-                    ServerPlayNetworking.send(serverPlayer,
+                    Platform.send(serverPlayer,
                             new PacketHandler.SyncResponsePayload(chunkToSend, false, worldId, "ok"));
-                    ServerPlayNetworking.send(serverPlayer,
+                    Platform.send(serverPlayer,
                             new PacketHandler.SyncProgressPayload(sentProgress, total,
                                     String.format("Sending regions %d/%d", sentProgress, total)));
                 });
@@ -167,14 +166,14 @@ public class ServerSyncHandler {
             currentSize += chunk.data.length;
         }
 
-        // 发送剩余数据
+        // Whatever is left over.
         if (!currentChunk.isEmpty()) {
             final List<ChunkMapData> chunkToSend = new ArrayList<>(currentChunk);
             final int sentProgress = processed + packetCount;
             serverPlayer.level().getServer().execute(() -> {
-                ServerPlayNetworking.send(serverPlayer,
+                Platform.send(serverPlayer,
                         new PacketHandler.SyncResponsePayload(chunkToSend, false, worldId, "ok"));
-                ServerPlayNetworking.send(serverPlayer,
+                Platform.send(serverPlayer,
                         new PacketHandler.SyncProgressPayload(sentProgress, total,
                                 String.format("Sending regions %d/%d", sentProgress, total)));
             });
@@ -184,8 +183,21 @@ public class ServerSyncHandler {
         return packetCount;
     }
 
+    /**
+     * Size of the data carried by one part.
+     *
+     * <p>Reserves 4KB for the part header: sync ID, path, dimension, coordinates and so on.
+     * Where the platform's payload limit is generous (Fabric) parts are at least 64KB, as
+     * before; where it is small (Paper's plugin messaging channel) the limit itself wins.</p>
+     *
+     * @return the per-part data size in bytes
+     */
     private static int getPartDataSize() {
-        return Math.max(64 * 1024, getMaxPacketSize() - 4096);
+        int available = getMaxPacketSize() - 4096;
+        if (available >= 64 * 1024) {
+            return available;
+        }
+        return Math.max(4096, available);
     }
 
     private static boolean sendRegionParts(String syncId, RegionSyncInfo info, ChunkMapData chunk,
@@ -209,7 +221,7 @@ public class ServerSyncHandler {
                     hash, partData);
 
             serverPlayer.level().getServer().execute(() ->
-                    ServerPlayNetworking.send(serverPlayer, payload));
+                    Platform.send(serverPlayer, payload));
 
             if (!applySpeedLimit(partData.length, serverPlayer, playerId)) {
                 return false;
@@ -220,29 +232,29 @@ public class ServerSyncHandler {
                 syncId, worldId, info.normalizedPath(), chunk.dimension, chunk.regionX, chunk.regionZ,
                 chunk.caveLayer, totalParts, totalBytes, chunk.timestampSeconds, hash);
         serverPlayer.level().getServer().execute(() ->
-                ServerPlayNetworking.send(serverPlayer, completePayload));
+                Platform.send(serverPlayer, completePayload));
         return true;
     }
 
-    /** 正在同步的玩家集合（用于断线或维度切换时中断同步） */
+    /** Players with a sync in flight, so it can be cut short on disconnect or dimension change. */
     private static final Set<UUID> syncingPlayers = ConcurrentHashMap.newKeySet();
 
-    /** 玩家同步开始时的维度（用于维度切换时中断同步） */
+    /** The dimension each player was in when their sync started. */
     private static final Map<UUID, ResourceKey<Level>> playerSyncDimensions = new ConcurrentHashMap<>();
 
-    /** 玩家同步线程引用（用于断线时立即中断线程） */
+    /** Each player's sync task, so it can be interrupted the moment they disconnect. */
     private static final Map<UUID, Future<?>> syncTasks = new ConcurrentHashMap<>();
 
-    /** 限速统计：累计发送字节数 */
+    /** Throttling: bytes sent so far this cycle. */
     private static final Map<UUID, Long> speedLimitBytesSent = new ConcurrentHashMap<>();
 
-    /** 限速统计：周期开始时间 */
+    /** Throttling: when the current cycle started. */
     private static final Map<UUID, Long> speedLimitCycleStart = new ConcurrentHashMap<>();
 
-    /** 每玩家自适应限速状态 */
+    /** Per-player adaptive throttle state. */
     private static final Map<UUID, AdaptiveThrottleState> adaptiveThrottleStates = new ConcurrentHashMap<>();
 
-    /** 限速周期最大时长（1秒），防止周期过长导致累计量过大 */
+    /** Longest a throttle cycle may run (1 second), so the running total stays small. */
     private static final long MAX_SPEED_LIMIT_CYCLE_MS = 1000;
 
     private static final class AdaptiveThrottleState {
@@ -258,18 +270,18 @@ public class ServerSyncHandler {
     }
 
     /**
-     * 轻量级的 region 同步信息。
-     * 只存储路径和元数据，不包含实际数据，节省内存。
-     * 用于流式处理：先收集路径，排序后逐个读取发送。
+     * A region queued for syncing, without its data.
+     * Holds only the path and metadata, which keeps memory flat while the whole list is
+     * collected and sorted; the data itself is read one region at a time as it is sent.
      *
-     * @param zipPath zip文件路径
-     * @param normalizedPath 规范化的相对路径
-     * @param timestampSeconds 时间戳（秒）
+     * @param zipPath path of the cached zip
+     * @param normalizedPath the region's path in the form the client uses
+     * @param timestampSeconds when the server generated it, in seconds
      */
     private record RegionSyncInfo(Path zipPath, String normalizedPath, long timestampSeconds,
                                    int regionX, int regionZ, String dimension, int caveLayer) {
         /**
-         * 判断是否为地表层。
+         * @return whether this is the surface layer
          */
         boolean isSurfaceLayer() {
             return caveLayer == Integer.MAX_VALUE;
@@ -296,84 +308,76 @@ public class ServerSyncHandler {
     }
 
     /**
-     * 注册网络数据包处理器
+     * Registers every payload type and the handlers for the ones clients send.
      *
-     * @param event 数据包处理器注册事件
-     */
-    /**
-     * 注册网络包处理器
+     * <p>Which loader this ends up talking to is the platform's business; the payload
+     * types and byte layouts are identical either way.</p>
      */
     public static void register() {
-        PayloadTypeRegistry.serverboundPlay().register(
-                PacketHandler.SyncRequestPayload.TYPE,
-                PacketHandler.SyncRequestPayload.STREAM_CODEC);
-        PayloadTypeRegistry.serverboundPlay().register(
-                PacketHandler.RadiusSyncRequestPayload.TYPE,
-                PacketHandler.RadiusSyncRequestPayload.STREAM_CODEC);
-        PayloadTypeRegistry.clientboundPlay().register(
+        MapSyncerPlatform platform = Platform.get();
+
+        platform.registerClientbound(
                 PacketHandler.SyncResponsePayload.TYPE,
                 PacketHandler.SyncResponsePayload.STREAM_CODEC);
-        PayloadTypeRegistry.clientboundPlay().register(
+        platform.registerClientbound(
                 PacketHandler.SyncProgressPayload.TYPE,
                 PacketHandler.SyncProgressPayload.STREAM_CODEC);
-        PayloadTypeRegistry.clientboundPlay().register(
+        platform.registerClientbound(
                 PacketHandler.SyncRegionPartPayload.TYPE,
                 PacketHandler.SyncRegionPartPayload.STREAM_CODEC);
-        PayloadTypeRegistry.clientboundPlay().register(
+        platform.registerClientbound(
                 PacketHandler.SyncRegionCompletePayload.TYPE,
                 PacketHandler.SyncRegionCompletePayload.STREAM_CODEC);
-        PayloadTypeRegistry.clientboundPlay().register(
+        platform.registerClientbound(
                 PacketHandler.ServerInstalledPayload.TYPE,
                 PacketHandler.ServerInstalledPayload.STREAM_CODEC);
-        PayloadTypeRegistry.serverboundPlay().register(
-                PacketHandler.AdminStatusRequestPayload.TYPE,
-                PacketHandler.AdminStatusRequestPayload.STREAM_CODEC);
-        PayloadTypeRegistry.clientboundPlay().register(
+        platform.registerClientbound(
                 PacketHandler.AdminStatusPayload.TYPE,
                 PacketHandler.AdminStatusPayload.STREAM_CODEC);
-        PayloadTypeRegistry.clientboundPlay().register(
+        platform.registerClientbound(
                 PacketHandler.OpenGuiPayload.TYPE,
                 PacketHandler.OpenGuiPayload.STREAM_CODEC);
-        PayloadTypeRegistry.serverboundPlay().register(
-                PacketHandler.AdminSettingsUpdatePayload.TYPE,
-                PacketHandler.AdminSettingsUpdatePayload.STREAM_CODEC);
-        PayloadTypeRegistry.clientboundPlay().register(
+        platform.registerClientbound(
                 PacketHandler.PublicWaypointsPayload.TYPE,
                 PacketHandler.PublicWaypointsPayload.STREAM_CODEC);
-        PayloadTypeRegistry.serverboundPlay().register(
-                PacketHandler.PublicWaypointsRequestPayload.TYPE,
-                PacketHandler.PublicWaypointsRequestPayload.STREAM_CODEC);
-        PayloadTypeRegistry.serverboundPlay().register(
-                PacketHandler.PublicWaypointAddPayload.TYPE,
-                PacketHandler.PublicWaypointAddPayload.STREAM_CODEC);
-        PayloadTypeRegistry.clientboundPlay().register(
+        platform.registerClientbound(
                 PacketHandler.PublicWaypointAddResultPayload.TYPE,
                 PacketHandler.PublicWaypointAddResultPayload.STREAM_CODEC);
 
-        ServerPlayNetworking.registerGlobalReceiver(PacketHandler.SyncRequestPayload.TYPE,
-                (payload, context) -> handleSyncRequest(payload, context));
-        ServerPlayNetworking.registerGlobalReceiver(PacketHandler.RadiusSyncRequestPayload.TYPE,
-                (payload, context) -> handleRadiusSyncRequest(payload, context));
-        ServerPlayNetworking.registerGlobalReceiver(PacketHandler.AdminStatusRequestPayload.TYPE,
-                (payload, context) -> handleAdminStatusRequest(context));
-        ServerPlayNetworking.registerGlobalReceiver(PacketHandler.AdminSettingsUpdatePayload.TYPE,
-                (payload, context) -> handleAdminSettingsUpdate(payload, context));
-        ServerPlayNetworking.registerGlobalReceiver(PacketHandler.PublicWaypointsRequestPayload.TYPE,
-                (payload, context) -> sendPublicWaypoints(context.player()));
-        ServerPlayNetworking.registerGlobalReceiver(PacketHandler.PublicWaypointAddPayload.TYPE,
-                (payload, context) -> handlePublicWaypointAdd(payload, context));
+        platform.registerServerbound(
+                PacketHandler.SyncRequestPayload.TYPE,
+                PacketHandler.SyncRequestPayload.STREAM_CODEC,
+                ServerSyncHandler::handleSyncRequest);
+        platform.registerServerbound(
+                PacketHandler.RadiusSyncRequestPayload.TYPE,
+                PacketHandler.RadiusSyncRequestPayload.STREAM_CODEC,
+                ServerSyncHandler::handleRadiusSyncRequest);
+        platform.registerServerbound(
+                PacketHandler.AdminStatusRequestPayload.TYPE,
+                PacketHandler.AdminStatusRequestPayload.STREAM_CODEC,
+                (payload, player) -> handleAdminStatusRequest(player));
+        platform.registerServerbound(
+                PacketHandler.AdminSettingsUpdatePayload.TYPE,
+                PacketHandler.AdminSettingsUpdatePayload.STREAM_CODEC,
+                ServerSyncHandler::handleAdminSettingsUpdate);
+        platform.registerServerbound(
+                PacketHandler.PublicWaypointsRequestPayload.TYPE,
+                PacketHandler.PublicWaypointsRequestPayload.STREAM_CODEC,
+                (payload, player) -> sendPublicWaypoints(player));
+        platform.registerServerbound(
+                PacketHandler.PublicWaypointAddPayload.TYPE,
+                PacketHandler.PublicWaypointAddPayload.STREAM_CODEC,
+                ServerSyncHandler::handlePublicWaypointAdd);
     }
 
-    private static void handleAdminStatusRequest(ServerPlayNetworking.Context context) {
-        ServerPlayer player = context.player();
+    private static void handleAdminStatusRequest(ServerPlayer player) {
         player.level().getServer().execute(() -> sendAdminStatus(player));
     }
 
     private static void handleAdminSettingsUpdate(PacketHandler.AdminSettingsUpdatePayload payload,
-                                                  ServerPlayNetworking.Context context) {
-        ServerPlayer player = context.player();
+                                                  ServerPlayer player) {
         player.level().getServer().execute(() -> {
-            if (!Commands.LEVEL_OWNERS.check(player.permissions())) {
+            if (!Platform.get().isAdmin(player)) {
                 sendAdminStatus(player);
                 return;
             }
@@ -396,11 +400,10 @@ public class ServerSyncHandler {
     }
 
     private static void handlePublicWaypointAdd(PacketHandler.PublicWaypointAddPayload payload,
-                                                ServerPlayNetworking.Context context) {
-        ServerPlayer player = context.player();
+                                                ServerPlayer player) {
         player.level().getServer().execute(() -> {
-            if (!Commands.LEVEL_OWNERS.check(player.permissions())) {
-                ServerPlayNetworking.send(player,
+            if (!Platform.get().isAdmin(player)) {
+                Platform.send(player,
                         new PacketHandler.PublicWaypointAddResultPayload("permission_denied", ""));
                 player.sendSystemMessage(ChatUtils.error("mapsyncer.waypoints.import.permission_denied"));
                 sendAdminStatus(player);
@@ -411,7 +414,7 @@ public class ServerSyncHandler {
                 PublicWaypointConfig.AddResult result = PublicWaypointConfig.addOrUpdateFromClient(payload.waypoint());
                 String name = payload.waypoint() == null ? "" : payload.waypoint().name();
                 if (result == PublicWaypointConfig.AddResult.FAILED) {
-                    ServerPlayNetworking.send(player,
+                    Platform.send(player,
                             new PacketHandler.PublicWaypointAddResultPayload("failed", name));
                     player.sendSystemMessage(ChatUtils.error("mapsyncer.waypoints.import.failed", name));
                     sendAdminStatus(player);
@@ -419,7 +422,7 @@ public class ServerSyncHandler {
                 }
 
                 String status = result == PublicWaypointConfig.AddResult.UPDATED ? "updated" : "added";
-                ServerPlayNetworking.send(player,
+                Platform.send(player,
                         new PacketHandler.PublicWaypointAddResultPayload(status, name));
                 player.sendSystemMessage(ChatUtils.success("mapsyncer.waypoints.import." + status, name));
                 sendAdminStatus(player);
@@ -427,7 +430,7 @@ public class ServerSyncHandler {
             } catch (Exception e) {
                 LOGGER.error("Failed to add public waypoint from {}", player.getUUID(), e);
                 String name = payload.waypoint() == null ? "" : payload.waypoint().name();
-                ServerPlayNetworking.send(player,
+                Platform.send(player,
                         new PacketHandler.PublicWaypointAddResultPayload("failed", name));
                 player.sendSystemMessage(ChatUtils.error("mapsyncer.waypoints.import.failed", name));
                 sendAdminStatus(player);
@@ -436,9 +439,9 @@ public class ServerSyncHandler {
     }
 
     private static void sendAdminStatus(ServerPlayer player) {
-        boolean allowed = Commands.LEVEL_OWNERS.check(player.permissions());
+        boolean allowed = Platform.get().isAdmin(player);
         if (!allowed) {
-            ServerPlayNetworking.send(player, new PacketHandler.AdminStatusPayload(
+            Platform.send(player, new PacketHandler.AdminStatusPayload(
                     false, false, 0, 0, 0, 0, 0, 0, 0, 0L, 0,
                     false, 0, RadiusSyncCenterMode.PLAYER_POSITION.name(), "minecraft:overworld", 0, 64, 0,
                     false, "", 0, "",
@@ -454,7 +457,7 @@ public class ServerSyncHandler {
         String currentDimensionId = currentDimension == null ? "" : currentDimension.identifier().toString();
         PublicWaypointConfig.Summary waypointSummary = PublicWaypointConfig.summary();
 
-        ServerPlayNetworking.send(player, new PacketHandler.AdminStatusPayload(
+        Platform.send(player, new PacketHandler.AdminStatusPayload(
                 true,
                 ConversionOrchestrator.isRunning(),
                 ConversionOrchestrator.getProcessedCount(),
@@ -486,27 +489,27 @@ public class ServerSyncHandler {
     public static void sendPublicWaypoints(ServerPlayer player) {
         PacketHandler.PublicWaypointsPayload payload = PublicWaypointConfig.createPayload();
         if (payload != null) {
-            ServerPlayNetworking.send(player, payload);
+            Platform.send(player, payload);
         }
     }
 
     /**
-     * 玩家断线事件处理
+     * A player disconnected.
      *
-     * 哈希比对机制会自动处理断点续传：
-     * - 客户端重连后发送已接收区域的哈希（从 sync_timestamps.cache 读取）
-     * - 服务端比对后只同步差异区域
+     * Resuming needs no bookkeeping here, because it falls out of the hash comparison:
+     * - on reconnect the client reports the hashes it already has, from sync_timestamps.cache
+     * - the server compares those and sends only what differs
      *
-     * @param playerId 玩家UUID
+     * @param playerId the player
      */
     public static void onPlayerDisconnect(UUID playerId) {
         syncingPlayers.remove(playerId);
         playerSyncDimensions.remove(playerId);
 
-        // 清理限速状态
+        // Drop their throttle state.
         clearSpeedLimitState(playerId);
 
-        // 立即中断同步线程
+        // And interrupt the sync thread straight away.
         Future<?> syncTask = syncTasks.remove(playerId);
         if (syncTask != null && !syncTask.isDone()) {
             syncTask.cancel(true);
@@ -515,10 +518,10 @@ public class ServerSyncHandler {
     }
 
     /**
-     * 检查玩家是否仍然有效（在线、在同步会话中、在同一维度）
+     * Whether a player is still worth sending to: online, still syncing, still in the same dimension.
      *
-     * @param player 服务端玩家实例
-     * @return true表示玩家有效，false表示无效（应中断同步）
+     * @param player the player
+     * @return {@code true} to keep going, {@code false} to abandon the sync
      */
     private static boolean isPlayerStillValid(ServerPlayer player) {
         UUID playerId = player.getUUID();
@@ -542,13 +545,13 @@ public class ServerSyncHandler {
     }
 
     /**
-     * 从xaeromap.txt文件读取worldId
+     * Reads the world ID out of xaeromap.txt.
      *
-     * 文件位置：<world>/xaeromap.txt
-     * 格式：id:<number>
+     * Location: &lt;world&gt;/xaeromap.txt
+     * Format: id:&lt;number&gt;
      *
-     * @param serverPlayer 服务端玩家实例
-     * @return worldId，如果文件不存在返回0
+     * @param serverPlayer the player being synced
+     * @return the world ID, or 0 if the file is missing
      */
     private static int readWorldIdFromXaeroMap(ServerPlayer serverPlayer) {
         try {
@@ -579,78 +582,78 @@ public class ServerSyncHandler {
     }
 
     /**
-     * 根据发送的数据量计算休眠时间，实现带宽感知的速度限制。
+     * Sleeps as needed to hold the send rate at the configured limit.
      *
-     * 核心思路：
-     * 1. 维护一个限速周期的累计发送量和周期开始时间
-     * 2. 每次发送后，计算当前周期的平均带宽
-     * 3. 如果平均带宽超过限速值，计算需要等待的时间
-     * 4. 如果实际发送时间已经超过预期时间（网络瓶颈），则不需要额外等待
+     * How it works:
+     * 1. track bytes sent and when the current cycle started
+     * 2. after each send, work out the average rate over the cycle
+     * 3. if that is above the limit, work out how long to wait
+     * 4. if sending already took longer than the limit allows, do not wait at all
      *
-     * 这种方式能自动适应网络状况：
-     * - 当网络带宽充足时，通过等待来限制发送速度
-     * - 当网络瓶颈导致发送速度低于限速时，不额外等待
+     * The effect is that it adapts to the connection:
+     * - on a fast link, waiting is what enforces the limit
+     * - on a slow one, the link is already the limit and nothing extra is added
      *
-     * @param bytesSent 本次发送的字节数
-     * @param player 玩家实例（用于中断检查）
-     * @param playerId 玩家UUID（用于中断检查）
-     * @return true 表示速度限制完成，false 表示玩家已掉线应中断同步
+     * @param bytesSent bytes sent by the call that just finished
+     * @param player the player, so the wait can be cut short
+     * @param playerId the player's UUID, so the wait can be cut short
+     * @return {@code true} when the wait finished, {@code false} if the player dropped out
      */
     private static boolean applySpeedLimit(int bytesSent, ServerPlayer player, UUID playerId) {
         int limitKBps = getEffectiveLimitKBps(player, playerId);
         if (limitKBps <= 0) return true; // No limit
 
-        // 获取或初始化限速周期状态
+        // Current cycle, starting one if needed.
         Long cycleStart = speedLimitCycleStart.get(playerId);
         Long totalBytes = speedLimitBytesSent.get(playerId);
 
         if (cycleStart == null || totalBytes == null) {
-            // 新周期开始
+            // New cycle.
             cycleStart = System.currentTimeMillis();
             totalBytes = 0L;
             speedLimitCycleStart.put(playerId, cycleStart);
             speedLimitBytesSent.put(playerId, totalBytes);
         }
 
-        // 累加本次发送量
+        // Add this send to the running total.
         totalBytes += bytesSent;
         speedLimitBytesSent.put(playerId, totalBytes);
 
-        // 计算当前周期实际耗时
+        // How long the cycle has actually taken.
         long actualTimeMs = System.currentTimeMillis() - cycleStart;
 
-        // 如果周期时间超过上限，重置周期（防止累计量过大）
+        // Cap the cycle length so the running total cannot grow without bound.
         if (actualTimeMs > MAX_SPEED_LIMIT_CYCLE_MS) {
             LOGGER.debug("Speed limit cycle too long ({} ms), resetting", actualTimeMs);
             speedLimitCycleStart.put(playerId, System.currentTimeMillis());
             speedLimitBytesSent.put(playerId, 0L);
-            // 重新计算（使用本次发送量作为新周期的起点）
+            // Restart, counting this send as the beginning of the new cycle.
             totalBytes = (long) bytesSent;
             speedLimitBytesSent.put(playerId, totalBytes);
             cycleStart = System.currentTimeMillis();
             actualTimeMs = 0;
         }
 
-        // 计算在限速下，发送这些字节应该花费的时间
+        // How long these bytes should have taken at the configured rate.
         long expectedTimeMs = (totalBytes * 1000L) / (limitKBps * 1024L);
 
-        // 如果实际耗时 >= 预期耗时，说明网络瓶颈已经限制了发送速度，不需要等待
+        // Already slower than that? The connection is the bottleneck; no need to wait.
         if (actualTimeMs >= expectedTimeMs) {
             LOGGER.debug("Bandwidth bottleneck detected: sent {} bytes in {} ms (expected {} ms at {} KBps), skipping wait",
                     totalBytes, actualTimeMs, expectedTimeMs, limitKBps);
-            // 重置周期，因为当前周期的带宽已经低于限速值
+            // Start a fresh cycle, since this one came in under the limit.
             speedLimitCycleStart.put(playerId, System.currentTimeMillis());
             speedLimitBytesSent.put(playerId, 0L);
             return true;
         }
 
-        // 计算需要等待的剩余时间
+        // Otherwise wait out the difference.
         long remainingTimeMs = expectedTimeMs - actualTimeMs;
 
         LOGGER.debug("Applying speed limit: sent {} bytes in {} ms, need to wait {} ms more (limit: {} KBps)",
                 totalBytes, actualTimeMs, remainingTimeMs, limitKBps);
 
-        // 执行可中断的等待
+        // An interruptible wait, so a disconnect ends it promptly.
         long checkIntervalMs = 100; // Check every 100ms
         long waitStartTime = System.currentTimeMillis();
 
@@ -672,7 +675,7 @@ public class ServerSyncHandler {
             }
         }
 
-        // 等待完成后，重置周期开始新的限速周期
+        // Start a fresh cycle now the wait is over.
         speedLimitCycleStart.put(playerId, System.currentTimeMillis());
         speedLimitBytesSent.put(playerId, 0L);
 
@@ -754,9 +757,9 @@ public class ServerSyncHandler {
     }
 
     /**
-     * 清除玩家的限速状态。
+     * Clears a player's throttle state.
      *
-     * @param playerId 玩家UUID
+     * @param playerId the player
      */
     private static void clearSpeedLimitState(UUID playerId) {
         speedLimitBytesSent.remove(playerId);
@@ -765,9 +768,9 @@ public class ServerSyncHandler {
     }
 
     /**
-     * 清除玩家的所有同步状态（同步完成或中断时调用）。
+     * Clears everything tracked for a player, once their sync finishes or is abandoned.
      *
-     * @param playerId 玩家UUID
+     * @param playerId the player
      */
     private static void cleanupSyncState(UUID playerId) {
         syncingPlayers.remove(playerId);
@@ -816,23 +819,23 @@ public class ServerSyncHandler {
     }
 
     /**
-     * 处理客户端同步请求
+     * Handles a client's sync request.
      *
-     * 接收客户端元数据，比对服务端缓存，发送差异数据。
-     * 基于哈希比对实现自动断点续传，无需索引恢复。
+     * Takes the client's metadata, compares it against the server cache and sends what is
+     * missing. Resume falls out of the hash comparison, so there is no index to restore.
      *
-     * **重要**：同步处理在异步线程执行，避免阻塞服务器主线程导致 Watchdog 崩溃。
+     * <b>Note:</b> the work happens on a worker thread. Doing it on the server thread would
+     * stall the server and trip the watchdog.
      *
-     * @param payload 同步请求数据包
-     * @param context 数据包上下文
+     * @param payload the sync request
+     * @param serverPlayer the player that sent it
      */
-    private static void handleSyncRequest(PacketHandler.SyncRequestPayload payload, ServerPlayNetworking.Context context) {
-        ServerPlayer serverPlayer = context.player();
+    private static void handleSyncRequest(PacketHandler.SyncRequestPayload payload, ServerPlayer serverPlayer) {
         sendPublicWaypoints(serverPlayer);
 
         UUID playerId = serverPlayer.getUUID();
 
-        // 如果玩家已经在同步中，先中断旧的同步线程
+        // If they were already syncing, interrupt the old run first.
         Future<?> oldTask = syncTasks.get(playerId);
         if (oldTask != null && !oldTask.isDone()) {
             LOGGER.info("Player {} requested new sync while syncing, interrupting old sync", playerId);
@@ -842,14 +845,14 @@ public class ServerSyncHandler {
 
         ResourceKey<Level> startDimension = serverPlayer.level().dimension();
 
-        // Mark player as syncing and record starting dimension (在主线程快速完成)
+        // Mark the player as syncing and note their dimension; both are quick.
         syncingPlayers.add(playerId);
         playerSyncDimensions.put(playerId, startDimension);
 
         // Client metadata (timestamp + hash) - contains already received regions for resume
         Map<String, ClientMeta> clientMeta = payload.clientMeta();
 
-        // 将耗时操作移到异步线程执行，避免阻塞主线程
+        // The expensive part runs off the server thread.
         Future<?> syncTask = MapSyncerExecutors.submitSync(() ->
                 processSyncAsync(serverPlayer, playerId, clientMeta, startDimension, null));
         syncTasks.put(playerId, syncTask);
@@ -857,8 +860,7 @@ public class ServerSyncHandler {
     }
 
     private static void handleRadiusSyncRequest(PacketHandler.RadiusSyncRequestPayload payload,
-                                                ServerPlayNetworking.Context context) {
-        ServerPlayer serverPlayer = context.player();
+                                                ServerPlayer serverPlayer) {
         sendPublicWaypoints(serverPlayer);
         UUID playerId = serverPlayer.getUUID();
 
@@ -876,7 +878,7 @@ public class ServerSyncHandler {
         SyncFilter filter = createRadiusFilter(serverPlayer, payload);
         if (filter == null) {
             serverPlayer.level().getServer().execute(() -> {
-                ServerPlayNetworking.send(serverPlayer,
+                Platform.send(serverPlayer,
                         new PacketHandler.SyncResponsePayload(List.of(), true, 0, "radius_disabled"));
                 serverPlayer.sendSystemMessage(ChatUtils.error("mapsyncer.server.radius_disabled"));
             });
@@ -895,14 +897,14 @@ public class ServerSyncHandler {
     }
 
     /**
-     * 异步处理同步请求。
-     * 在单独线程中执行耗时操作（遍历缓存、比对哈希、发送数据），
-     * 避免阻塞服务器主线程。
+     * Runs the sync itself.
+     * Walking the cache, comparing hashes and pushing data all happen here, on a worker
+     * thread, so the server thread is never blocked.
      *
-     * @param serverPlayer 服务端玩家实例
-     * @param playerId 玩家UUID
-     * @param clientMeta 客户端元数据
-     * @param startDimension 开始同步时的维度
+     * @param serverPlayer the player being synced
+     * @param playerId the player's UUID
+     * @param clientMeta what the client reported having
+     * @param startDimension the dimension the player was in when the sync began
      */
     private static void processSyncAsync(ServerPlayer serverPlayer, UUID playerId,
             Map<String, ClientMeta> clientMeta, ResourceKey<Level> startDimension, SyncFilter filter) {
@@ -918,10 +920,10 @@ public class ServerSyncHandler {
         Path cacheDir = ConversionOrchestrator.CACHE_DIR;
 
         if (!Files.exists(cacheDir)) {
-            // 在主线程发送消息和数据包
+            // Chat and packets go out on the server thread.
             serverPlayer.level().getServer().execute(() -> {
                 serverPlayer.sendSystemMessage(ChatUtils.message("mapsyncer.server.no_cache"));
-                ServerPlayNetworking.send(serverPlayer,
+                Platform.send(serverPlayer,
                         new PacketHandler.SyncResponsePayload(List.of(), true, worldId, "no_cache"));
             });
             cleanupSyncState(playerId);
@@ -975,7 +977,7 @@ public class ServerSyncHandler {
                 }
             } else {
                 String friendlyDim = dimMapping.toServerDimension(xaeroDim);
-                // 在主线程发送消息
+                // Chat goes out on the server thread.
                 serverPlayer.level().getServer().execute(() -> {
                     serverPlayer.sendSystemMessage(ChatUtils.error("mapsyncer.server.dim_not_available", friendlyDim, friendlyDim));
                 });
@@ -985,9 +987,9 @@ public class ServerSyncHandler {
 
         if (!hasValidDimension) {
             LOGGER.info("No valid dimension cache found for requested dimensions: {}", requestedDimensions);
-            // 在主线程发送数据包
+            // Packets go out on the server thread.
             serverPlayer.level().getServer().execute(() -> {
-                ServerPlayNetworking.send(serverPlayer,
+                Platform.send(serverPlayer,
                         new PacketHandler.SyncResponsePayload(List.of(), true, worldId, "dim_not_available"));
             });
             cleanupSyncState(playerId);
@@ -995,7 +997,7 @@ public class ServerSyncHandler {
         }
 
         // Compare server cache with client metadata to find differences
-        // 流式处理：只收集路径信息，不读取数据
+        // Collect paths only; the data is read later, one region at a time.
         List<RegionSyncInfo> regionsToSync = new ArrayList<>();
 
         try (Stream<Path> stream = Files.walk(cacheDir)) {
@@ -1023,7 +1025,7 @@ public class ServerSyncHandler {
                         RegionMeta serverMeta = serverCache.get(normalizedPath);
                         ClientMeta clientMetaEntry = clientMeta.get(normalizedPath);
 
-                        // 判断是否需要同步
+                        // Does the client need this one?
                         boolean shouldSync = false;
                         long timestamp = 0;
 
@@ -1052,7 +1054,7 @@ public class ServerSyncHandler {
                         }
 
                         if (shouldSync) {
-                            // 解析路径信息，但不读取数据
+                            // Parse the path, but leave the data on disk for now.
                             RegionSyncInfo info = parseRegionInfo(zipPath, normalizedPath, timestamp);
                             if (info != null) {
                                 if (filter != null && !filter.includes(info)) {
@@ -1080,7 +1082,7 @@ public class ServerSyncHandler {
         }
 
         int total = regionsToSync.size();
-        // 创建 final 变量供 lambda 使用
+        // Final copies for the lambdas below.
         final int finalHashMatchCount = hashMatchCount;
         final int finalTimestampSkipCount = timestampSkipCount;
 
@@ -1088,33 +1090,33 @@ public class ServerSyncHandler {
                 serverPlayer.getName().getString(), total, finalHashMatchCount, finalTimestampSkipCount);
 
         if (total == 0) {
-            // 在主线程发送消息
+            // Chat goes out on the server thread.
             serverPlayer.level().getServer().execute(() -> {
                 serverPlayer.sendSystemMessage(ChatUtils.success("mapsyncer.server.map_uptodate", finalHashMatchCount, finalTimestampSkipCount));
-                ServerPlayNetworking.send(serverPlayer,
+                Platform.send(serverPlayer,
                         new PacketHandler.SyncResponsePayload(List.of(), true, worldId, "uptodate"));
             });
             cleanupSyncState(playerId);
             return;
         }
 
-        // 按视距优先排序：视距内region最先发送，让玩家更快看到周围地图
+        // Nearest first, so the map fills in around the player before anything else.
         sortByViewDistancePriority(regionsToSync, serverPlayer);
 
-        // 立即发送轻量的"开始同步"通知，避免客户端超时
-        // 这个包不含数据，仅通知客户端服务端已开始处理
+        // Send the lightweight "sync starting" notice immediately, so the client does not
+        // sit waiting; it carries no data.
         final int initialTotal = total;
         serverPlayer.level().getServer().execute(() -> {
-            ServerPlayNetworking.send(serverPlayer,
+            Platform.send(serverPlayer,
                     new PacketHandler.SyncProgressPayload(0, initialTotal, "Sync started"));
         });
 
-        // 流式处理：逐个读取数据并发送，避免一次性加载所有数据到内存
+        // Read and send one region at a time, rather than loading everything into memory.
         String syncId = UUID.randomUUID().toString();
         List<ChunkMapData> batch = new ArrayList<>();
         int batchBytes = 0;
         int processed = 0;
-        int batchThreshold = getBatchThreshold(serverPlayer, playerId); // 批次累积阈值（目标每秒发送量）
+        int batchThreshold = getBatchThreshold(serverPlayer, playerId); // target bytes per second
 
         for (RegionSyncInfo info : regionsToSync) {
             if (!isPlayerStillValid(serverPlayer)) {
@@ -1123,7 +1125,7 @@ public class ServerSyncHandler {
                 return;
             }
 
-            // 读取单个region的数据（流式处理）
+            // Read this region's data now that it is its turn.
             ChunkMapData chunk = readRegionData(info);
             if (chunk == null) {
                 LOGGER.warn("Failed to read region data: {}", info.normalizedPath());
@@ -1152,13 +1154,13 @@ public class ServerSyncHandler {
                 processed++;
                 final int partProgress = processed;
                 serverPlayer.level().getServer().execute(() ->
-                        ServerPlayNetworking.send(serverPlayer,
+                        Platform.send(serverPlayer,
                                 new PacketHandler.SyncProgressPayload(partProgress, total,
                                         String.format("Sending regions %d/%d", partProgress, total))));
                 continue;
             }
 
-            // 累积到批次阈值后发送（拆成多个包，每个包不超过maxPacketSize）
+            // Once the batch reaches the threshold, flush it (split across payloads as needed).
             if (batchBytes + chunk.data.length > batchThreshold && !batch.isEmpty()) {
                 if (!applySpeedLimit(batchBytes, serverPlayer, playerId)) {
                     LOGGER.info("Player {} disconnected during speed limit, aborting sync", playerId);
@@ -1196,9 +1198,9 @@ public class ServerSyncHandler {
 
         final int finalTotal = total;
             serverPlayer.level().getServer().execute(() -> {
-                ServerPlayNetworking.send(serverPlayer,
+                Platform.send(serverPlayer,
                         new PacketHandler.SyncResponsePayload(List.of(), true, worldId, "ok"));
-                ServerPlayNetworking.send(serverPlayer,
+                Platform.send(serverPlayer,
                         new PacketHandler.SyncProgressPayload(finalTotal, finalTotal, "completed"));
                 serverPlayer.sendSystemMessage(ChatUtils.success("mapsyncer.server.sync_complete", finalTotal));
             });
@@ -1209,13 +1211,13 @@ public class ServerSyncHandler {
     }
 
     /**
-     * 解析 region 信息（不含数据）。
-     * 用于流式处理，先收集路径信息再排序发送。
+     * Builds the queue entry for a region, without reading its data.
+     * Paths are collected and sorted first; the data comes later.
      *
-     * @param zipPath zip文件路径
-     * @param normalizedPath 规范化的相对路径
-     * @param timestampSeconds 时间戳（秒）
-     * @return RegionSyncInfo，如果解析失败返回 null
+     * @param zipPath path of the cached zip
+     * @param normalizedPath the region's path in the form the client uses
+     * @param timestampSeconds when the server generated it, in seconds
+     * @return the queue entry, or {@code null} if it could not be read
      */
     private static RegionSyncInfo parseRegionInfo(Path zipPath, String normalizedPath, long timestampSeconds) {
         try {
@@ -1246,11 +1248,11 @@ public class ServerSyncHandler {
     }
 
     /**
-     * 读取单个 region 的数据。
-     * 流式处理中按需读取，避免一次性加载所有数据。
+     * Reads one region's data.
+     * Called when the region's turn comes, so only one region is in memory at a time.
      *
-     * @param info region同步信息
-     * @return ChunkMapData，如果读取失败返回 null
+     * @param info the queued region
+     * @return the region's data, or {@code null} if it could not be read
      */
     private static ChunkMapData readRegionData(RegionSyncInfo info) {
         try {
@@ -1264,9 +1266,9 @@ public class ServerSyncHandler {
     }
 
     /**
-     * 清除所有跟踪数据
+     * Clears all tracking state.
      *
-     * 在服务器停止时调用，防止内存泄漏。
+     * Called when the server stops, so nothing is left behind.
      */
     public static void cleanup() {
         syncingPlayers.clear();
@@ -1279,15 +1281,15 @@ public class ServerSyncHandler {
     }
 
     /**
-     * 清理离线玩家的残留状态
+     * Clears state belonging to players who are no longer online.
      *
-     * <p>玩家异常断线时，onPlayerDisconnect可能未被调用，导致状态残留。
-     * 此方法定期检查并清理不在在线列表中的玩家状态。</p>
+     * <p>A connection that dies outright may never reach the disconnect handler, leaving
+     * entries behind. This sweeps anything not in the online list.</p>
      *
-     * @param onlinePlayerIds 当前在线玩家的UUID集合
+     * @param onlinePlayerIds UUIDs of everyone currently online
      */
     public static void cleanupOfflinePlayers(Set<UUID> onlinePlayerIds) {
-        // 检查syncingPlayers中的玩家是否仍然在线
+        // Which tracked players are no longer connected?
         Set<UUID> toRemove = new HashSet<>();
         for (UUID playerId : syncingPlayers) {
             if (!onlinePlayerIds.contains(playerId)) {
@@ -1295,13 +1297,13 @@ public class ServerSyncHandler {
             }
         }
 
-        // 清理离线玩家的状态
+        // Drop their state.
         for (UUID playerId : toRemove) {
             LOGGER.info("Cleaning up stale state for offline player {}", playerId);
             syncingPlayers.remove(playerId);
             playerSyncDimensions.remove(playerId);
 
-            // 中断同步线程（如果仍在运行）
+        // And interrupt their sync thread if it is still running.
             Future<?> syncTask = syncTasks.remove(playerId);
             if (syncTask != null && !syncTask.isDone()) {
                 syncTask.cancel(true);
@@ -1316,48 +1318,48 @@ public class ServerSyncHandler {
     }
 
     /**
-     * 按视距优先排序同步列表。
-     * 视距内的region排在最前面，让玩家最先收到周围的地图数据。
+     * Sorts the queue so the player's surroundings arrive first.
+     * Regions within view distance go to the front, so the map fills in around the player.
      *
-     * <p>排序逻辑：</p>
+     * <p>The order:</p>
      * <ul>
-     *   <li>计算玩家当前位置对应的region坐标</li>
-     *   <li>视距内的region（与玩家region距离≤视距region数）排在最前</li>
-     *   <li>视距外的region按与玩家的距离排序（近者优先）</li>
+     *   <li>work out which region the player is standing in</li>
+     *   <li>regions within view distance of it come first</li>
+     *   <li>everything else follows, nearest first</li>
      * </ul>
      *
-     * @param regions 待同步的region信息列表
-     * @param player 服务端玩家实例
+     * @param regions the regions queued for syncing
+     * @param player the player being synced
      */
     private static void sortByViewDistancePriority(List<RegionSyncInfo> regions, ServerPlayer player) {
-        // 获取玩家位置
+        // Where the player is.
         int playerChunkX = player.getBlockX() >> 4;
         int playerChunkZ = player.getBlockZ() >> 4;
         int playerRegionX = playerChunkX >> 5;
         int playerRegionZ = playerChunkZ >> 5;
 
-        // 获取视距（渲染距离），加2 chunks作为移动偏移容差
+        // View distance, plus 2 chunks of slack for the player moving.
         int viewDistanceChunks = player.level().getServer().getPlayerList().getViewDistance() + 2;
-        int viewDistanceRegions = (viewDistanceChunks >> 5) + 1;  // 向上取整
+        int viewDistanceRegions = (viewDistanceChunks >> 5) + 1;  // round up
 
         LOGGER.debug("Player region: ({}, {}), view distance: {} chunks = ~{} regions",
                 playerRegionX, playerRegionZ, viewDistanceChunks, viewDistanceRegions);
 
-        // 计算每个region到玩家的距离，并排序
+        // Distance from the player to each region, then sort.
         regions.sort((a, b) -> {
             int distA = Math.max(Math.abs(a.regionX() - playerRegionX), Math.abs(a.regionZ() - playerRegionZ));
             int distB = Math.max(Math.abs(b.regionX() - playerRegionX), Math.abs(b.regionZ() - playerRegionZ));
 
-            // 视距内的region（距离≤视距）排在最前，视距外按距离排序
+        // In view first; beyond that, nearest first.
             boolean aInView = distA <= viewDistanceRegions;
             boolean bInView = distB <= viewDistanceRegions;
 
-            if (aInView && !bInView) return -1;  // a在视距内，排前面
-            if (!aInView && bInView) return 1;   // b在视距内，排前面
-            return Integer.compare(distA, distB); // 都在视距内或都在视距外，按距离排序
+            if (aInView && !bInView) return -1;  // a is in view, so a first
+            if (!aInView && bInView) return 1;   // b is in view, so b first
+            return Integer.compare(distA, distB); // otherwise nearest first
         });
 
-        // 统计视距内region数量
+        // How many ended up in view, for the log.
         int viewRegionCount = 0;
         for (RegionSyncInfo info : regions) {
             int dist = Math.max(Math.abs(info.regionX() - playerRegionX), Math.abs(info.regionZ() - playerRegionZ));

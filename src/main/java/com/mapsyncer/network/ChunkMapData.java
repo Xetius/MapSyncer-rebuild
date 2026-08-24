@@ -3,69 +3,69 @@ package com.mapsyncer.network;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 
 /**
- * 地图区域数据传输类
+ * One region's map data, as sent from server to client.
  *
- * <p>包含单个region的地图数据和元信息，用于服务端到客户端同步。
- * 支持地表层和洞穴层的地图数据传输。</p>
+ * <p>Carries the converted map data for a single region plus the metadata the client
+ * needs to file it: surface layer and cave layers are both sent this way.</p>
  *
- * <p>caveLayer字段说明：</p>
+ * <p>About {@code caveLayer}:</p>
  * <ul>
- *   <li>{@code Integer.MAX_VALUE}：地表层（默认值）</li>
- *   <li>其他值：洞穴层号，对应文件夹 caves/<caveLayer>/...</li>
- *   <li>层号计算：caveLayer = caveStart >> 4（除以16）</li>
+ *   <li>{@code Integer.MAX_VALUE}: the surface layer (the default)</li>
+ *   <li>anything else: a cave layer, stored under {@code caves/<caveLayer>/...}</li>
+ *   <li>the layer number is {@code caveStart >> 4}, i.e. divided by 16</li>
  * </ul>
  *
  * @see PacketHandler.SyncResponsePayload
  */
 public class ChunkMapData {
 
-    /** Region的X坐标（单位：region） */
+    /** Region X coordinate, in regions. */
     public final int regionX;
-    /** Region的Z坐标（单位：region） */
+    /** Region Z coordinate, in regions. */
     public final int regionZ;
-    /** 维度标识符，如 "minecraft:overworld" */
+    /** Dimension ID, e.g. {@code "minecraft:overworld"}. */
     public final String dimension;
-    /** 地图数据字节数组（压缩后的region文件内容） */
+    /** The map data: the compressed contents of the region file. */
     public final byte[] data;
-    /** 服务端生成时间戳（秒级），用于客户端判断数据是否过期 */
+    /** When the server generated this, in seconds, so the client can spot stale data. */
     public final long timestampSeconds;
-    /** 洞洞层号，Integer.MAX_VALUE表示地表层 */
+    /** Cave layer number; {@code Integer.MAX_VALUE} means the surface layer. */
     public final int caveLayer;
 
     /**
-     * 兼容旧代码的构造器（默认地表层，时间戳为0）
+     * Convenience constructor: surface layer, timestamp 0.
      *
-     * @param regionX   Region的X坐标
-     * @param regionZ   Region的Z坐标
-     * @param dimension 维度标识符
-     * @param data      地图数据字节数组
+     * @param regionX   region X coordinate
+     * @param regionZ   region Z coordinate
+     * @param dimension dimension ID
+     * @param data      the map data
      */
     public ChunkMapData(int regionX, int regionZ, String dimension, byte[] data) {
         this(regionX, regionZ, dimension, data, 0, Integer.MAX_VALUE);
     }
 
     /**
-     * 兼容旧代码的构造器（默认地表层）
+     * Convenience constructor: surface layer.
      *
-     * @param regionX           Region的X坐标
-     * @param regionZ           Region的Z坐标
-     * @param dimension         维度标识符
-     * @param data              地图数据字节数组
-     * @param timestampSeconds  服务端生成时间戳（秒）
+     * @param regionX           region X coordinate
+     * @param regionZ           region Z coordinate
+     * @param dimension         dimension ID
+     * @param data              the map data
+     * @param timestampSeconds  when the server generated it, in seconds
      */
     public ChunkMapData(int regionX, int regionZ, String dimension, byte[] data, long timestampSeconds) {
         this(regionX, regionZ, dimension, data, timestampSeconds, Integer.MAX_VALUE);
     }
 
     /**
-     * 完整构造器
+     * Full constructor.
      *
-     * @param regionX           Region的X坐标
-     * @param regionZ           Region的Z坐标
-     * @param dimension         维度标识符
-     * @param data              地图数据字节数组
-     * @param timestampSeconds  服务端生成时间戳（秒）
-     * @param caveLayer         洞洞层号，Integer.MAX_VALUE表示地表层
+     * @param regionX           region X coordinate
+     * @param regionZ           region Z coordinate
+     * @param dimension         dimension ID
+     * @param data              the map data
+     * @param timestampSeconds  when the server generated it, in seconds
+     * @param caveLayer         cave layer number; {@code Integer.MAX_VALUE} for the surface
      */
     public ChunkMapData(int regionX, int regionZ, String dimension, byte[] data,
                          long timestampSeconds, int caveLayer) {
@@ -78,26 +78,26 @@ public class ChunkMapData {
     }
 
     /**
-     * 判断是否为地表层
+     * Whether this is the surface layer.
      *
-     * @return 如果caveLayer为Integer.MAX_VALUE则返回true，否则返回false
+     * @return {@code true} if {@code caveLayer} is {@code Integer.MAX_VALUE}
      */
     public boolean isSurfaceLayer() {
         return caveLayer == Integer.MAX_VALUE;
     }
 
     /**
-     * 序列化到网络缓冲区
+     * Writes this to a network buffer.
      *
-     * <p>使用标记位实现向后兼容：</p>
+     * <p>A flag byte keeps the format backwards compatible:</p>
      * <ul>
-     *   <li>先写入基本字段（regionX, regionZ, dimension, data, timestampSeconds）</li>
-     *   <li>写入标记位表示是否有caveLayer</li>
-     *   <li>只有非地表层时才写入caveLayer值</li>
+     *   <li>the base fields first (regionX, regionZ, dimension, data, timestampSeconds)</li>
+     *   <li>then a flag saying whether a cave layer follows</li>
+     *   <li>the cave layer number only when this is not the surface layer</li>
      * </ul>
      *
-     * @param buf  网络缓冲区
-     * @param data 要序列化的地图数据
+     * @param buf  the network buffer
+     * @param data the map data to write
      */
     public static void encode(RegistryFriendlyByteBuf buf, ChunkMapData data) {
         buf.writeInt(data.regionX);
@@ -106,7 +106,7 @@ public class ChunkMapData {
         buf.writeByteArray(data.data);
         buf.writeLong(data.timestampSeconds);
 
-        // 使用标记位实现向后兼容
+        // Flag byte, for backwards compatibility.
         boolean hasCaveLayer = data.caveLayer != Integer.MAX_VALUE;
         buf.writeBoolean(hasCaveLayer);
         if (hasCaveLayer) {
@@ -115,16 +115,16 @@ public class ChunkMapData {
     }
 
     /**
-     * 从网络缓冲区反序列化
+     * Reads one of these from a network buffer.
      *
-     * <p>向后兼容处理：</p>
+     * <p>Backwards compatible:</p>
      * <ul>
-     *   <li>读取标记位判断是否有caveLayer</li>
-     *   <li>如果没有标记位或标记为false，使用Integer.MAX_VALUE（地表）</li>
+     *   <li>reads the flag to see whether a cave layer follows</li>
+     *   <li>with no flag, or a false one, assumes the surface layer</li>
      * </ul>
      *
-     * @param buf 网络缓冲区
-     * @return 反序列化后的地图数据对象
+     * @param buf the network buffer
+     * @return the decoded map data
      */
     public static ChunkMapData decode(RegistryFriendlyByteBuf buf) {
         int regionX = buf.readInt();
@@ -133,7 +133,7 @@ public class ChunkMapData {
         byte[] data = buf.readByteArray();
         long timestampSeconds = buf.readLong();
 
-        // 尝试读取 caveLayer（向后兼容）
+        // Cave layer, if this sender wrote one.
         int caveLayer = Integer.MAX_VALUE;
         if (buf.isReadable()) {
             boolean hasCaveLayer = buf.readBoolean();

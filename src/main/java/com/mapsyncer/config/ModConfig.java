@@ -4,8 +4,8 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
 import com.mapsyncer.MapSyncer;
+import com.mapsyncer.platform.Platform;
 import com.mapsyncer.mca.DimensionTypeInfo;
-import net.fabricmc.loader.api.FabricLoader;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -14,28 +14,38 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Mod 配置类
+ * Server-side configuration.
  *
- * <p>管理 MapSyncer for XaeroWorldMap 的服务器端配置，包括:</p>
+ * <p>Covers:</p>
  * <ul>
- *   <li>通用设置（调试日志、并发限制等）</li>
- *   <li>增量更新设置（更新模式、时间间隔）</li>
- *   <li>维度扫描配置（扫描模式、起始高度等）</li>
+ *   <li>general settings (debug logging, concurrency limits and so on)</li>
+ *   <li>incremental updates (mode and interval)</li>
+ *   <li>per-dimension scanning (scan mode, cave start height and so on)</li>
  * </ul>
  */
 public class ModConfig {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
-    private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("mapsyncer.json");
+    /**
+     * Path to the config file.
+     *
+     * <p>The directory comes from the platform: {@code config/} on Fabric,
+     * {@code plugins/MapSyncer/} on Paper.</p>
+     *
+     * @return the config file path
+     */
+    private static Path configPath() {
+        return Platform.configDir().resolve("mapsyncer.json");
+    }
 
     public static final ServerConfig SERVER = new ServerConfig();
 
     /**
-     * 加载配置文件
+     * Loads the config file, writing defaults if it does not exist yet.
      */
     public static void load() {
-        if (Files.exists(CONFIG_PATH)) {
+        if (Files.exists(configPath())) {
             try {
-                String json = Files.readString(CONFIG_PATH);
+                String json = Files.readString(configPath());
                 JsonObject root = GSON.fromJson(json, JsonObject.class);
                 ServerConfig loaded = GSON.fromJson(root, ServerConfig.class);
                 if (loaded != null) {
@@ -95,7 +105,7 @@ public class ModConfig {
                 if (needsSave) {
                     save();
                 }
-                MapSyncer.LOGGER.info("Loaded config from {}", CONFIG_PATH);
+                MapSyncer.LOGGER.info("Loaded config from {}", configPath());
             } catch (Exception e) {
                 MapSyncer.LOGGER.error("Failed to load config, using defaults", e);
             }
@@ -105,21 +115,21 @@ public class ModConfig {
     }
 
     /**
-     * 保存配置文件
+     * Writes the current config back to disk.
      */
     public static void save() {
         try {
-            Files.createDirectories(CONFIG_PATH.getParent());
+            Files.createDirectories(configPath().getParent());
             String json = GSON.toJson(SERVER);
-            Files.writeString(CONFIG_PATH, json);
-            MapSyncer.LOGGER.info("Saved config to {}", CONFIG_PATH);
+            Files.writeString(configPath(), json);
+            MapSyncer.LOGGER.info("Saved config to {}", configPath());
         } catch (IOException e) {
             MapSyncer.LOGGER.error("Failed to save config", e);
         }
     }
 
     /**
-     * 更新模式枚举
+     * How incremental cache updates are triggered.
      */
     public enum UpdateMode {
         DISABLED,
@@ -128,7 +138,7 @@ public class ModConfig {
     }
 
     /**
-     * 扫描模式枚举
+     * How a dimension is sampled when building the map.
      */
     public enum ScanMode {
         SURFACE,
@@ -142,7 +152,7 @@ public class ModConfig {
     }
 
     /**
-     * 维度扫描配置记录
+     * Scan settings for a single dimension.
      */
     public record DimensionScanConfig(
         String dimension,
@@ -180,7 +190,7 @@ public class ModConfig {
     }
 
     /**
-     * 服务端配置类
+     * The server config as stored in JSON.
      */
     public static class ServerConfig {
         // General settings

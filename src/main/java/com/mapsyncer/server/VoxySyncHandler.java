@@ -2,8 +2,8 @@ package com.mapsyncer.server;
 
 import com.mapsyncer.config.ModConfig;
 import com.mapsyncer.network.PacketHandler;
-import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
-import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
+import com.mapsyncer.platform.MapSyncerPlatform;
+import com.mapsyncer.platform.Platform;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -42,32 +42,32 @@ public final class VoxySyncHandler {
     }
 
     public static void register() {
-        PayloadTypeRegistry.serverboundPlay().register(
-                PacketHandler.VoxyCapabilityRequestPayload.TYPE,
-                PacketHandler.VoxyCapabilityRequestPayload.STREAM_CODEC);
-        PayloadTypeRegistry.clientboundPlay().register(
+        MapSyncerPlatform platform = Platform.get();
+
+        platform.registerClientbound(
                 PacketHandler.VoxyCapabilityPayload.TYPE,
                 PacketHandler.VoxyCapabilityPayload.STREAM_CODEC);
-        PayloadTypeRegistry.serverboundPlay().register(
-                PacketHandler.VoxySyncRequestPayload.TYPE,
-                PacketHandler.VoxySyncRequestPayload.STREAM_CODEC);
-        PayloadTypeRegistry.clientboundPlay().register(
+        platform.registerClientbound(
                 PacketHandler.VoxySyncStartPayload.TYPE,
                 PacketHandler.VoxySyncStartPayload.STREAM_CODEC);
-        PayloadTypeRegistry.clientboundPlay().register(
+        platform.registerClientbound(
                 PacketHandler.VoxyRegionPartPayload.TYPE,
                 PacketHandler.VoxyRegionPartPayload.STREAM_CODEC);
-        PayloadTypeRegistry.clientboundPlay().register(
+        platform.registerClientbound(
                 PacketHandler.VoxySyncProgressPayload.TYPE,
                 PacketHandler.VoxySyncProgressPayload.STREAM_CODEC);
-        PayloadTypeRegistry.clientboundPlay().register(
+        platform.registerClientbound(
                 PacketHandler.VoxySyncCompletePayload.TYPE,
                 PacketHandler.VoxySyncCompletePayload.STREAM_CODEC);
 
-        ServerPlayNetworking.registerGlobalReceiver(PacketHandler.VoxyCapabilityRequestPayload.TYPE,
-                (payload, context) -> sendCapability(context.player()));
-        ServerPlayNetworking.registerGlobalReceiver(PacketHandler.VoxySyncRequestPayload.TYPE,
-                (payload, context) -> handleSyncRequest(payload, context.player()));
+        platform.registerServerbound(
+                PacketHandler.VoxyCapabilityRequestPayload.TYPE,
+                PacketHandler.VoxyCapabilityRequestPayload.STREAM_CODEC,
+                (payload, player) -> sendCapability(player));
+        platform.registerServerbound(
+                PacketHandler.VoxySyncRequestPayload.TYPE,
+                PacketHandler.VoxySyncRequestPayload.STREAM_CODEC,
+                VoxySyncHandler::handleSyncRequest);
     }
 
     public static void logSecurityWarningIfEnabled() {
@@ -82,7 +82,7 @@ public final class VoxySyncHandler {
     }
 
     private static void sendCapability(ServerPlayer player) {
-        player.level().getServer().execute(() -> ServerPlayNetworking.send(player,
+        player.level().getServer().execute(() -> Platform.send(player,
                 new PacketHandler.VoxyCapabilityPayload(
                         ModConfig.SERVER.enableVoxySync,
                         ModConfig.SERVER.enableVoxySync ? "enabled" : "server_disabled")));
@@ -245,9 +245,24 @@ public final class VoxySyncHandler {
         }
     }
 
+    /**
+     * Size of the data carried by one Voxy part.
+     *
+     * <p>Reserves 2KB for the part header. Where the platform's payload limit is small
+     * (Paper's plugin messaging channel), falls back to that limit so a part never exceeds
+     * what the channel accepts.</p>
+     *
+     * @return the per-part data size in bytes
+     */
     private static int getPayloadDataSize() {
-        int maxPacketSize = Math.min(ModConfig.SERVER.maxSyncPacketSize, MAX_PACKET_SIZE_LIMIT);
-        return Math.max(16 * 1024, maxPacketSize - 2048);
+        int platformLimit = Platform.get().maxPayloadBytes();
+        int maxPacketSize = Math.min(ModConfig.SERVER.maxSyncPacketSize,
+                Math.min(MAX_PACKET_SIZE_LIMIT, platformLimit));
+        int available = maxPacketSize - 2048;
+        if (available >= 16 * 1024) {
+            return available;
+        }
+        return Math.max(4096, available);
     }
 
     private static boolean applySpeedLimit(int bytesSent, ServerPlayer player) throws InterruptedException {
@@ -311,11 +326,11 @@ public final class VoxySyncHandler {
     }
 
     private static void sendIfConnected(ServerPlayer player, CustomPacketPayload payload) {
-        if (player.connection == null || !ServerPlayNetworking.canSend(player, payload.type())) {
+        if (player.connection == null || !Platform.canSend(player, payload.type())) {
             return;
         }
         try {
-            ServerPlayNetworking.send(player, payload);
+            Platform.send(player, payload);
         } catch (IllegalArgumentException | IllegalStateException e) {
             LOGGER.debug("Skipping Voxy packet for disconnected player {}", player.getUUID(), e);
         }

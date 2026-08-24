@@ -60,61 +60,61 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 方块属性解析器 - 使用Minecraft API查询方块属性
+ * Answers questions about a block by asking the Minecraft registry.
  *
- * 参考 Xaero WorldMap 的实现方式，用于解析方块的各种属性：
- * - 是否为空气、流体、透明方块
- * - 是否为花、植物
- * - 光照遮挡值和发射值
- * - 是否可以含水
- * - 是否有有效的地图颜色
+ * Follows Xaero's World Map. Works out, for a block:
+ * - whether it is air, a fluid, or transparent
+ * - whether it is a flower or a plant
+ * - how much light it blocks and how much it emits
+ * - whether it can be waterlogged
+ * - whether it has a usable map colour
  *
- * 支持原版方块和mod方块的自动识别，使用缓存提高查询效率。
+ * Vanilla and modded blocks alike; results are cached.
  */
 public class BlockPropertyResolver {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(BlockPropertyResolver.class);
 
-    /** 占位用的BlockGetter和BlockPos（用于需要参数的API调用） */
+    /** Stand-in BlockGetter and BlockPos, for APIs that insist on them. */
     private static final BlockGetter PLACEHOLDER_BLOCK_GETTER = new PlaceholderBlockGetter();
     private static final BlockPos PLACEHOLDER_BLOCKPOS = BlockPos.ZERO;
 
-    /** 缓存方块属性查询结果（带LRU清理） */
+    /** Cached properties per block, pruned when it gets too large. */
     private static final ConcurrentHashMap<String, BlockProperties> propertiesCache = new ConcurrentHashMap<>();
 
-    /** 缓存最大容量（超过时清理旧条目） */
+    /** Cache ceiling; older entries are dropped past this. */
     private static final int MAX_CACHE_SIZE = 10000;
 
-    /** 有问题的方块集合（MapColor抛出异常的方块） */
+    /** Blocks whose MapColor lookup threw, so it is not retried. */
     private static final ConcurrentHashMap<String, Boolean> buggedBlocks = new ConcurrentHashMap<>();
 
     /**
-     * 方块属性集合
+     * Everything worked out about one block.
      *
-     * 包含方块的所有解析属性，用于地图渲染判断。
+     * These are the properties map rendering decides from.
      */
     public record BlockProperties(
         boolean isAir,
         boolean isWater,
         boolean isLava,
         boolean isFluid,
-        boolean isTransparent,      // 透明方块（玻璃、冰等）
-        boolean isInvisible,        // 隐形方块（扫描时跳过）
+        boolean isTransparent,      // transparent: glass, ice and so on
+        boolean isInvisible,        // skipped entirely when scanning
         boolean isFlower,
-        boolean isPlant,            // 植物（花、草、作物、蘑菇等）
+        boolean isPlant,            // flowers, grass, crops, mushrooms and so on
         boolean isGrassBlock,
-        boolean isGlowing,          // 发光方块
-        int lightBlock,             // 光照遮挡值
-        int lightEmission,          // 光照发射值
-        boolean canBeWaterlogged,   // 是否可以含水
-        boolean hasVanillaColor,    // 是否有地图颜色
-        boolean hasMapColor         // 是否有有效的MapColor
+        boolean isGlowing,          // emits light
+        int lightBlock,             // how much light it blocks
+        int lightEmission,          // how much light it emits
+        boolean canBeWaterlogged,   // accepts the waterlogged property
+        boolean hasVanillaColor,    // has a map colour at all
+        boolean hasMapColor         // has a usable MapColor
     ) {
         /**
-         * 判断是否为含水方块表面
+         * Whether this is the surface of a waterlogged block.
          *
-         * @param properties 方块属性键值对
-         * @return true表示是含水方块表面
+         * @param properties the block's property values
+         * @return {@code true} if it is waterlogged
          */
         public boolean isWaterloggedSurface(Map<String, String> properties) {
             if (properties == null) return false;
@@ -124,20 +124,20 @@ public class BlockPropertyResolver {
         }
 
         /**
-         * 判断是否为透明流体（水）
+         * Whether this is a see-through fluid, i.e. water.
          *
-         * @return true表示是透明流体
+         * @return {@code true} for water
          */
         public boolean isTranslucentFluid() {
             return isWater;
         }
 
         /**
-         * 判断是否应该作为overlay处理
+         * Whether this should be drawn as an overlay.
          *
-         * overlay方块（水、透明方块）会渲染在下层方块之上。
+         * Overlay blocks — water, transparent blocks — render on top of whatever is beneath.
          *
-         * @return true表示应该作为overlay处理
+         * @return {@code true} if it should be an overlay
          */
         public boolean shouldOverlay() {
             return isWater || isTransparent;
@@ -145,16 +145,16 @@ public class BlockPropertyResolver {
     }
 
     /**
-     * 获取方块属性（通过方块名称）
+     * The properties of a block, by name.
      *
-     * 使用缓存提高效率，相同方块名称只解析一次。
-     * 当缓存超过上限时，清理部分旧条目（LRU策略）。
+     * Cached, so each block name is resolved once.
+     * Once the cache passes its ceiling, some older entries are dropped.
      *
-     * @param blockName 方块名称，如"minecraft:stone"或"modid:custom_block"
-     * @return 方块属性集合
+     * @param blockName the block name, e.g. "minecraft:stone" or "modid:custom_block"
+     * @return the block's properties
      */
     public static BlockProperties getProperties(String blockName) {
-        // 检查缓存大小，超过上限时清理部分条目
+        // Prune the cache if it has grown past its ceiling.
         if (propertiesCache.size() > MAX_CACHE_SIZE) {
             trimCache();
         }
@@ -162,10 +162,11 @@ public class BlockPropertyResolver {
     }
 
     /**
-     * 清理缓存（LRU策略）
+     * Prunes the cache.
      *
-     * 当缓存超过上限时，清理一半的旧条目。
-     * 使用简单策略：随机清理一部分条目，避免遍历所有条目排序。
+     * Drops half the entries once it passes the ceiling.
+     * Deliberately crude: entries go by iteration order rather than true LRU, which avoids
+     * sorting the whole map.
      */
     private static void trimCache() {
         int currentSize = propertiesCache.size();
@@ -173,7 +174,7 @@ public class BlockPropertyResolver {
 
         LOGGER.debug("Trimming properties cache: size={}, removing {} entries", currentSize, toRemove);
 
-        // 清理一半条目（简单策略，不精确LRU）
+        // Drop half the entries; approximate rather than strict LRU.
         int removed = 0;
         for (String key : propertiesCache.keySet()) {
             if (removed >= toRemove) break;
@@ -185,10 +186,10 @@ public class BlockPropertyResolver {
     }
 
     /**
-     * 获取方块属性（通过BlockState）
+     * The properties of a block, from its state.
      *
-     * @param state 方块状态
-     * @return 方块属性集合
+     * @param state the block state
+     * @return the block's properties
      */
     public static BlockProperties getProperties(BlockState state) {
         String blockName = getKey(state);
@@ -196,12 +197,12 @@ public class BlockPropertyResolver {
     }
 
     /**
-     * 解析方块属性（使用Minecraft API）
+     * Works out a block's properties from the registry.
      *
-     * 查询方块的默认BlockState获取各种属性信息。
+     * Looks the block up and reads what it needs off the default block state.
      *
-     * @param blockName 方块注册表名称
-     * @return 解析后的方块属性
+     * @param blockName the block's registry name
+     * @return the block's properties
      */
     private static BlockProperties resolveProperties(String blockName) {
         try {
@@ -215,48 +216,48 @@ public class BlockPropertyResolver {
 
             Block block = blockOpt.get();
 
-            // 获取默认 BlockState（用于查询通用属性）
+            // The default state, which the generic properties come from.
             BlockState defaultState = block.defaultBlockState();
 
-            // 查询属性
+            // Read the properties.
             boolean isAir = defaultState.isAir() || block instanceof AirBlock;
 
-            // 检查流体：通过 LiquidBlock 类判断
+            // Fluid: is it a LiquidBlock?
             boolean isFluid = block instanceof LiquidBlock;
             FluidState fluidState = defaultState.getFluidState();
             Fluid fluid = fluidState.getType();
             boolean isWater = fluid == Fluids.WATER || fluid == Fluids.FLOWING_WATER;
             boolean isLava = fluid == Fluids.LAVA || fluid == Fluids.FLOWING_LAVA;
 
-            // 检查透明性：使用 Xaero 方式（AirBlock, TransparentBlock, translucent 渲染）
+            // Transparency, the Xaero way: AirBlock, TransparentBlock, translucent rendering.
             boolean isTransparent = checkTransparency(block, defaultState);
 
-            // 检查隐形性：使用 RenderShape.INVISIBLE + 标签 + 类判断
+            // Invisibility: RenderShape.INVISIBLE, plus tags and classes.
             boolean isInvisible = checkInvisibility(block, defaultState, true);
 
-            // 检查是否为花：使用 BlockTags.FLOWERS + 类判断
+            // Flower: BlockTags.FLOWERS, plus the flower classes.
             boolean isFlower = checkIsFlower(block, defaultState);
 
-            // 检查是否为植物：使用基类 + 标签判断（更广泛）
+            // Plant: base classes and tags, which casts a wider net.
             boolean isPlant = checkIsPlant(block, defaultState, isFlower);
 
-            // 检查是否为草方块
+            // Grass block?
             boolean isGrassBlock = block == Blocks.GRASS_BLOCK;
 
-            // 检查发光性：使用 getLightEmission API
+            // Glowing: from getLightEmission.
             int lightEmission = defaultState.getLightEmission();
             boolean isGlowing = lightEmission >= 15;
 
-            // 获取光照遮挡值
+            // How much light it blocks.
             int lightBlock = getLightBlock(defaultState);
 
-            // 检查是否可以含水
+            // Can it be waterlogged?
             boolean canBeWaterlogged = checkCanBeWaterlogged(block, defaultState);
 
-            // 检查是否有有效的 MapColor
+            // Does it have a usable MapColor?
             boolean hasMapColor = checkHasMapColor(defaultState, blockName);
 
-            // 检查是否有地图颜色（非空气、非隐形、非问题方块）
+            // And a map colour at all: not air, not invisible, not a known-bad block.
             boolean hasVanillaColor = !isAir && !isInvisible && !buggedBlocks.containsKey(blockName);
 
             return new BlockProperties(
@@ -273,13 +274,13 @@ public class BlockPropertyResolver {
     }
 
     /**
-     * 检查方块是否有有效的MapColor
+     * Whether a block has a usable MapColor.
      *
-     * 参考 Xaero hasVanillaColor 实现。
+     * Follows Xaero's hasVanillaColor.
      *
-     * @param state 方块状态
-     * @param blockName 方块注册表名称
-     * @return true表示有有效的MapColor
+     * @param state the block state
+     * @param blockName the block's registry name
+     * @return {@code true} if MapColor gives something usable
      */
     private static boolean checkHasMapColor(BlockState state, String blockName) {
         try {
@@ -288,7 +289,7 @@ public class BlockPropertyResolver {
                 return true;
             }
         } catch (Throwable t) {
-            // 记录有问题的方块
+            // Remember the block threw, so it is not retried.
             buggedBlocks.put(blockName, true);
             LOGGER.debug("Broken vanilla map color definition found: {}", blockName);
         }
@@ -296,20 +297,20 @@ public class BlockPropertyResolver {
     }
 
     /**
-     * 获取光照遮挡值（兼容新旧API）
+     * How much light a block blocks, across API versions.
      *
-     * @param state 方块状态
-     * @return 光照遮挡值（0-15）
+     * @param state the block state
+     * @return the light blocking value, 0-15
      */
     private static int getLightBlock(BlockState state) {
         try {
-            // getLightBlock 需要 BlockGetter 和 BlockPos 参数
+            // getLightBlock wants a BlockGetter and a BlockPos.
             return state.getLightDampening();
         } catch (Exception e) {
-            // 备用：基于方块类型估算
+            // Failing that, estimate from the block type.
             FluidState fluidState = state.getFluidState();
             if (!fluidState.isEmpty()) {
-                // 水：遮挡值为2，熔岩：遮挡值为15
+                // Water blocks 2, lava blocks 15.
                 if (fluidState.getType() == Fluids.WATER || fluidState.getType() == Fluids.FLOWING_WATER) {
                     return 2;
                 }
@@ -317,67 +318,67 @@ public class BlockPropertyResolver {
                     return 15;
                 }
             }
-            // 空气：遮挡值为0
+            // Air blocks nothing.
             if (state.isAir()) {
                 return 0;
             }
-            // 树叶：遮挡值为1
+            // Leaves block 1.
             if (state.is(BlockTags.LEAVES)) {
                 return 1;
             }
-            // 默认：大多数实体方块遮挡全部光照
+            // Anything else solid blocks all of it.
             return 15;
         }
     }
 
     /**
-     * 检查方块是否为透明方块（作为overlay）
+     * Whether a block is transparent, and so drawn as an overlay.
      *
-     * 参考 Xaero shouldOverlay 实现：
-     * 1. AirBlock或TransparentBlock类 → overlay
-     * 2. 渲染类型是translucent的方块 → overlay
+     * Follows Xaero's shouldOverlay:
+     * 1. AirBlock or TransparentBlock: overlay
+     * 2. anything rendered translucent: overlay
      *
-     * 重要：树叶渲染类型是cutout，不是translucent，所以树叶不应该是overlay！
+     * Note that leaves render cutout rather than translucent, so leaves are not overlays.
      *
-     * @param block 方块实例
-     * @param state 方块状态
-     * @return true表示是透明方块
+     * @param block the block
+     * @param state the block state
+     * @return {@code true} if it is transparent
      */
     private static boolean checkTransparency(Block block, BlockState state) {
-        // 1. AirBlock 或 TransparentBlock 类（Xaero 方式）
-        // TransparentBlock 包括：玻璃、冰、遮光玻璃等
+        // 1. AirBlock or TransparentBlock, as Xaero does it.
+        //    TransparentBlock covers glass, ice, tinted glass and so on.
         if (block instanceof AirBlock || block instanceof TransparentBlock) {
             return true;
         }
 
-        // 2. 流体方块（水、熔岩）- 使用 translucent 渲染
+        // 2. Fluids (water, lava), which render translucent.
         FluidState fluidState = state.getFluidState();
         if (!fluidState.isEmpty()) {
-            return true;  // 流体使用 translucent 渲染
+            return true;  // fluids render translucent
         }
 
-        // 3. 水生植物（海带、海草）- TransparentBlock 子类，已在上面判断
-        // 但有些 mod 可能不继承 TransparentBlock，需要额外检查
+        // 3. Water plants (kelp, seagrass) subclass TransparentBlock and are caught above,
+        //    but a mod may not subclass it, so check for those by name.
         String blockId = BuiltInRegistries.BLOCK.getKey(block).getPath();
         if (blockId.contains("kelp") || blockId.contains("seagrass")) {
             return true;
         }
 
-        // 4. 已知使用 translucent 渲染类型的方块
-        // 参考 Minecraft 渲染类型定义
-        // 注意：树叶使用 cutout 渲染，不是 translucent，所以不在这里
+        // 4. Blocks known to render translucent.
+        //    Taken from Minecraft's render type definitions.
+        //    Leaves render cutout rather than translucent, so they are deliberately absent.
 
-        // 5. 检查是否有 translucent 渲染类型的线索
-        // 服务端无法直接调用客户端渲染 API，所以使用方块属性推断
-        // translucent 渲染的方块通常有较低的 lightBlock 值，但不包括树叶
-        // 树叶的 lightBlock = 1，但渲染类型是 cutout_mipped，不是 translucent
+        // 5. Otherwise infer it.
+        //    A server cannot call the client's render API, so this goes on block properties:
+        //    translucent blocks usually block little light, though leaves do too.
+        //    Leaves have lightBlock = 1 but render cutout_mipped, not translucent.
 
-        // 排除树叶：树叶虽然有 lightBlock = 1，但使用 cutout 渲染，不应作为 overlay
+        // Exclude leaves explicitly, despite their lightBlock of 1.
         if (state.is(BlockTags.LEAVES)) {
-            return false;  // 树叶不作为 overlay，是实体方块
+            return false;  // leaves are solid, not an overlay
         }
 
-        // 其他 lightBlock < 15 的方块可能是 translucent
+        // Anything else blocking less than full light may be translucent.
         int lightBlock = getLightBlock(state);
         if (lightBlock > 0 && lightBlock < 15) {
             return true;
@@ -387,17 +388,17 @@ public class BlockPropertyResolver {
     }
 
     /**
-     * 检查方块是否为隐形方块（扫描时跳过）
+     * Whether a block is invisible, and so skipped when scanning.
      *
-     * 参考 Xaero MapWriter.isInvisible() 实现。
+     * Follows Xaero's MapWriter.isInvisible().
      *
-     * @param block 方块实例
-     * @param state 方块状态
-     * @param flowers 是否启用花渲染（配置项）
-     * @return true表示是隐形方块
+     * @param block the block
+     * @param state the block state
+     * @param flowers whether flower rendering is enabled in the config
+     * @return {@code true} if the block should be skipped
      */
     private static boolean checkInvisibility(Block block, BlockState state, boolean flowers) {
-        // 1. 渲染形状为 INVISIBLE（mod 方块自动支持）
+        // 1. RenderShape.INVISIBLE, which modded blocks get for free.
         if (!(block instanceof LiquidBlock) &&
             state.getRenderShape() == RenderShape.INVISIBLE) {
             return true;
@@ -405,36 +406,36 @@ public class BlockPropertyResolver {
 
         String blockId = BuiltInRegistries.BLOCK.getKey(block).getPath();
 
-        // 2. 火把类（Xaero 硬编码）
+        // 2. Torches, which Xaero hardcodes.
         if (block == Blocks.TORCH || blockId.contains("torch") || blockId.endsWith("_torch")) {
             return true;
         }
 
-        // 3. 矮草（Xaero 默认跳过）
+        // 3. Short grass, which Xaero skips by default.
         if (block == Blocks.SHORT_GRASS) {
             return true;
         }
 
-        // 4. 玻璃类（Xaero 作为隐形处理）
+        // 4. Glass, which Xaero treats as invisible.
         if (block == Blocks.GLASS || block == Blocks.GLASS_PANE ||
             blockId.contains("stained_glass") || blockId.contains("stained_glass_pane")) {
             return true;
         }
 
-        // 5. 检查是否为花
+        // 5. Flowers.
         boolean isFlower = checkIsFlower(block, state);
 
-        // 6. DoublePlantBlock 非花类型（高草、大型蕨）
+        // 6. DoublePlantBlocks that are not flowers (tall grass, large fern).
         if (block instanceof DoublePlantBlock && !isFlower) {
             return true;
         }
 
-        // 7. 花配置关闭时跳过花
+        // 7. Skip flowers when flower rendering is off.
         if (isFlower && !flowers) {
             return true;
         }
 
-        // 8. 有问题的方块（MapColor 抛异常）
+        // 8. Blocks whose MapColor lookup threw.
         String blockName = BuiltInRegistries.BLOCK.getKey(block).toString();
         if (buggedBlocks.containsKey(blockName)) {
             return true;
@@ -444,51 +445,51 @@ public class BlockPropertyResolver {
     }
 
     /**
-     * 检查方块是否为花
+     * Whether a block is a flower.
      *
-     * 参考 Xaero实现：BlockTags.FLOWERS + FlowerBlock + TallFlowerBlock
+     * Follows Xaero: BlockTags.FLOWERS plus FlowerBlock and TallFlowerBlock.
      *
-     * @param block 方块实例
-     * @param state 方块状态
-     * @return true表示是花
+     * @param block the block
+     * @param state the block state
+     * @return {@code true} if it is a flower
      */
     private static boolean checkIsFlower(Block block, BlockState state) {
-        // 1. 使用 BlockTags.FLOWERS 标签（支持 mod 花）
+        // 1. The BlockTags.FLOWERS tag, which covers modded flowers.
         if (state.is(BlockTags.FLOWERS)) {
             return true;
         }
 
-        // 2. FlowerBlock 类（原版小花）
+        // 2. FlowerBlock: vanilla small flowers.
         if (block instanceof FlowerBlock) {
             return true;
         }
 
-        // 3. TallFlowerBlock 类（原版双层花）
+        // 3. TallFlowerBlock: vanilla tall flowers.
         if (block instanceof TallFlowerBlock) {
             return true;
         }
 
-        // 4. MushroomBlock 类（蘑菇）
+        // 4. MushroomBlock: mushrooms.
         if (block instanceof MushroomBlock) {
             return true;
         }
 
-        // 5. 睡莲
+        // 5. Lily pads.
         if (block == Blocks.LILY_PAD) {
             return true;
         }
 
-        // 6. 特定的原版花（蘑菇不算花标签但算花类）
+        // 6. Specific vanilla flowers (mushrooms are not tagged as flowers but count here).
         if (block == Blocks.BROWN_MUSHROOM || block == Blocks.RED_MUSHROOM) {
             return true;
         }
 
-        // 7. PitcherCropBlock（Pitcher 植物）
+        // 7. PitcherCropBlock.
         if (block instanceof PitcherCropBlock) {
             return true;
         }
 
-        // 8. TorchflowerCropBlock（火炬花作物）
+        // 8. TorchflowerCropBlock.
         if (block instanceof TorchflowerCropBlock) {
             return true;
         }
@@ -497,128 +498,128 @@ public class BlockPropertyResolver {
     }
 
     /**
-     * 检查方块是否为植物（花、草、作物、蘑菇、藤蔓等）
+     * Whether a block is a plant: flowers, grass, crops, mushrooms, vines and so on.
      *
-     * 使用基类继承检查 + BlockTags标签判断。
+     * Checked through base classes and BlockTags.
      *
-     * @param block 方块实例
-     * @param state 方块状态
-     * @param isFlower 是否已经是花
-     * @return true表示是植物
+     * @param block the block
+     * @param state the block state
+     * @param isFlower whether it has already been identified as a flower
+     * @return {@code true} if it is a plant
      */
     private static boolean checkIsPlant(Block block, BlockState state, boolean isFlower) {
-        // 如果已经是花，则也是植物
+        // Flowers are plants.
         if (isFlower) {
             return true;
         }
 
-        // 1. BushBlock - 基础植物类（大多数植物的基类）
+        // 1. BushBlock: the base class most plants extend.
         if (block instanceof BushBlock) {
             return true;
         }
 
-        // 2. CropBlock - 作物类（小麦、胡萝卜、土豆、甜菜根等）
+        // 2. CropBlock: wheat, carrots, potatoes, beetroot and so on.
         if (block instanceof CropBlock) {
             return true;
         }
 
-        // 3. StemBlock - 瓜茎类（南瓜茎、西瓜茎）
+        // 3. StemBlock: pumpkin and melon stems.
         if (block instanceof StemBlock) {
             return true;
         }
 
-        // 4. AttachedStemBlock - 已结果的瓜茎（已结果的南瓜/西瓜）
+        // 4. AttachedStemBlock: stems that have fruited.
         if (block instanceof AttachedStemBlock) {
             return true;
         }
 
-        // 5. SaplingBlock - 树苗类
+        // 5. SaplingBlock: saplings.
         if (block instanceof SaplingBlock) {
             return true;
         }
 
-        // 6. TallGrassBlock - 高草类
+        // 6. TallGrassBlock: tall grass.
         if (block instanceof TallGrassBlock) {
             return true;
         }
 
-        // 7. 死灌木
+        // 7. Dead bushes.
         if (block == Blocks.DEAD_BUSH) {
             return true;
         }
 
-        // 8. CactusBlock - 仙人掌
+        // 8. CactusBlock: cactus.
         if (block instanceof CactusBlock) {
             return true;
         }
 
-        // 9. SugarCaneBlock - 甘蔗
+        // 9. SugarCaneBlock: sugar cane.
         if (block instanceof SugarCaneBlock) {
             return true;
         }
 
-        // 10. BambooStalkBlock / BambooSaplingBlock - 竹子
+        // 10. BambooStalkBlock / BambooSaplingBlock: bamboo.
         if (block instanceof BambooStalkBlock || block instanceof BambooSaplingBlock) {
             return true;
         }
 
-        // 11. NetherWartBlock - 地狱疣
+        // 11. NetherWartBlock: nether wart.
         if (block instanceof NetherWartBlock) {
             return true;
         }
 
-        // 12. SeagrassBlock / TallSeagrassBlock - 海草
+        // 12. SeagrassBlock / TallSeagrassBlock: seagrass.
         if (block instanceof SeagrassBlock || block instanceof TallSeagrassBlock) {
             return true;
         }
 
-        // 13. KelpBlock / KelpPlantBlock - 海带
+        // 13. KelpBlock / KelpPlantBlock: kelp.
         if (block instanceof KelpBlock || block instanceof KelpPlantBlock) {
             return true;
         }
 
-        // 14. GrowingPlantBlock / GrowingPlantBodyBlock / GrowingPlantHeadBlock - 生长植物（藤蔓类）
+        // 14. GrowingPlantBlock and friends: vine-like growing plants.
         if (block instanceof GrowingPlantBlock || block instanceof GrowingPlantBodyBlock || block instanceof GrowingPlantHeadBlock) {
             return true;
         }
 
-        // 15. CaveVinesBlock / CaveVinesPlantBlock - 洞穴藤蔓（发光地衣）
+        // 15. CaveVinesBlock / CaveVinesPlantBlock: glow berries.
         if (block instanceof CaveVinesBlock || block instanceof CaveVinesPlantBlock) {
             return true;
         }
 
-        // 16. TwistingVinesBlock / TwistingVinesPlantBlock - 扭曲藤蔓
+        // 16. TwistingVinesBlock / TwistingVinesPlantBlock: twisting vines.
         if (block instanceof TwistingVinesBlock || block instanceof TwistingVinesPlantBlock) {
             return true;
         }
 
-        // 17. WeepingVinesBlock / WeepingVinesPlantBlock - 垂泪藤蔓
+        // 17. WeepingVinesBlock / WeepingVinesPlantBlock: weeping vines.
         if (block instanceof WeepingVinesBlock || block instanceof WeepingVinesPlantBlock) {
             return true;
         }
 
-        // 18. ChorusPlantBlock / ChorusFlowerBlock - 紫颂植物
+        // 18. ChorusPlantBlock / ChorusFlowerBlock: chorus plants.
         if (block instanceof ChorusPlantBlock || block instanceof ChorusFlowerBlock) {
             return true;
         }
 
-        // 19. BaseCoralPlantBlock - 珊瑚植物基类
+        // 19. BaseCoralPlantBlock: coral plants.
         if (block instanceof BaseCoralPlantBlock) {
             return true;
         }
 
-        // 20. BigDripleafBlock / SmallDripleafBlock - 滴叶草
+        // 20. BigDripleafBlock / SmallDripleafBlock: dripleaf.
         if (block instanceof BigDripleafBlock || block instanceof SmallDripleafBlock) {
             return true;
         }
 
-        // 21. 使用 BlockTags 检查（支持 mod 植物）
-        // CROPS 标签 - 作物
+        // 21. BlockTags, which covers modded plants.
+        //     The CROPS tag.
         if (state.is(BlockTags.CROPS)) {
             return true;
         }
 
-        // 22. 名称模式匹配（备用，用于未使用标准基类的 mod 植物）
+        // 22. Name matching, as a fallback for mods that use no standard base class.
         String blockId = BuiltInRegistries.BLOCK.getKey(block).getPath();
         if (blockId.contains("plant") || blockId.contains("crop") ||
             blockId.contains("sapling") || blockId.contains("seed") ||
@@ -635,23 +636,23 @@ public class BlockPropertyResolver {
     }
 
     /**
-     * 检查方块是否可以含水
+     * Whether a block can be waterlogged.
      *
-     * 通过检查BlockState定义中是否有waterlogged属性。
+     * Decided by whether its state definition has the waterlogged property.
      *
-     * @param block 方块实例
-     * @param state 方块状态
-     * @return true表示可以含水
+     * @param block the block
+     * @param state the block state
+     * @return {@code true} if it can be waterlogged
      */
     private static boolean checkCanBeWaterlogged(Block block, BlockState state) {
-        // 检查状态定义中是否有 waterlogged 属性（最准确）
+        // The state definition is the accurate answer.
         for (Property<?> prop : state.getProperties()) {
             if (prop.getName().equals("waterlogged")) {
                 return true;
             }
         }
 
-        // 备用：常见可含水方块类型（名称匹配）
+        // Failing that, match the usual waterloggable blocks by name.
         String blockId = BuiltInRegistries.BLOCK.getKey(block).getPath();
         if (blockId.contains("fence_gate") || blockId.contains("stairs") ||
             blockId.contains("slab") || blockId.contains("wall") ||
@@ -669,12 +670,12 @@ public class BlockPropertyResolver {
     }
 
     /**
-     * 备用属性（当方块未在注册表中找到时）
+     * Fallback properties for a block that is not in the registry.
      *
-     * 使用字符串模式匹配推断属性。
+     * Inferred by matching the name.
      *
-     * @param blockName 方块名称
-     * @return 推断的方块属性
+     * @param blockName the block name
+     * @return the inferred properties
      */
     private static BlockProperties getFallbackProperties(String blockName) {
         String name = blockName.toLowerCase();
@@ -693,7 +694,7 @@ public class BlockPropertyResolver {
         boolean isFlower = name.contains("flower") || name.contains("rose") ||
                           name.contains("tulip") || name.contains("lily");
 
-        // 植物检测（名称模式匹配）
+        // Plants, by name.
         boolean isPlant = isFlower || name.contains("plant") || name.contains("crop") ||
                          name.contains("sapling") || name.contains("seed") ||
                          name.contains("vine") || name.contains("fern") ||
@@ -731,27 +732,27 @@ public class BlockPropertyResolver {
     }
 
     /**
-     * 获取方块的注册表键名
+     * The registry name of a block state.
      *
-     * @param state 方块状态
-     * @return 方块注册表键名（如"minecraft:stone"）
+     * @param state the block state
+     * @return the registry name, e.g. "minecraft:stone"
      */
     public static String getKey(BlockState state) {
         return BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
     }
 
     /**
-     * 获取方块的注册表键名
+     * The registry name of a block.
      *
-     * @param block 方块实例
-     * @return 方块注册表键名（如"minecraft:stone"）
+     * @param block the block
+     * @return the registry name, e.g. "minecraft:stone"
      */
     public static String getKey(Block block) {
         return BuiltInRegistries.BLOCK.getKey(block).toString();
     }
 
     /**
-     * 清除缓存
+     * Empties the cache.
      */
     public static void clearCache() {
         propertiesCache.clear();
@@ -759,211 +760,210 @@ public class BlockPropertyResolver {
     }
 
     /**
-     * 获取缓存大小
+     * How many blocks are cached.
      *
-     * @return 缓存中的方块数量
+     * @return the cache size
      */
     public static int getCacheSize() {
         return propertiesCache.size();
     }
 
     /**
-     * 获取问题方块数量
+     * How many blocks are known to be broken.
      *
-     * @return 有问题的方块数量（MapColor抛异常的方块）
+     * @return how many blocks threw from MapColor
      */
     public static int getBuggedBlocksCount() {
         return buggedBlocks.size();
     }
 
-    // ========== 便捷方法 ==========
+    // ========== Convenience wrappers ==========
 
     /**
-     * 判断是否为空气方块
+     * Whether a block is air.
      *
-     * @param blockName 方块名称
-     * @return true表示是空气
+     * @param blockName the block name
+     * @return {@code true} for air
      */
     public static boolean isAir(String blockName) {
         return getProperties(blockName).isAir();
     }
 
     /**
-     * 判断是否为水方块
+     * Whether a block is water.
      *
-     * @param blockName 方块名称
-     * @return true表示是水
+     * @param blockName the block name
+     * @return {@code true} for water
      */
     public static boolean isWater(String blockName) {
         return getProperties(blockName).isWater();
     }
 
     /**
-     * 判断是否为熔岩方块
+     * Whether a block is lava.
      *
-     * @param blockName 方块名称
-     * @return true表示是熔岩
+     * @param blockName the block name
+     * @return {@code true} for lava
      */
     public static boolean isLava(String blockName) {
         return getProperties(blockName).isLava();
     }
 
     /**
-     * 判断是否为流体方块
+     * Whether a block is a fluid.
      *
-     * @param blockName 方块名称
-     * @return true表示是流体
+     * @param blockName the block name
+     * @return {@code true} for fluids
      */
     public static boolean isFluid(String blockName) {
         return getProperties(blockName).isFluid();
     }
 
     /**
-     * 判断是否为透明方块
+     * Whether a block is transparent.
      *
-     * @param blockName 方块名称
-     * @return true表示是透明方块
+     * @param blockName the block name
+     * @return {@code true} if transparent
      */
     public static boolean isTransparent(String blockName) {
         return getProperties(blockName).isTransparent();
     }
 
     /**
-     * 判断是否为隐形方块
+     * Whether a block is invisible.
      *
-     * @param blockName 方块名称
-     * @return true表示是隐形方块
+     * @param blockName the block name
+     * @return {@code true} if invisible
      */
     public static boolean isInvisible(String blockName) {
         return getProperties(blockName).isInvisible();
     }
 
     /**
-     * 判断是否为花
+     * Whether a block is a flower.
      *
-     * @param blockName 方块名称
-     * @return true表示是花
+     * @param blockName the block name
+     * @return {@code true} for flowers
      */
     public static boolean isFlower(String blockName) {
         return getProperties(blockName).isFlower();
     }
 
     /**
-     * 判断是否为植物
+     * Whether a block is a plant.
      *
-     * @param blockName 方块名称
-     * @return true表示是植物
+     * @param blockName the block name
+     * @return {@code true} for plants
      */
     public static boolean isPlant(String blockName) {
         return getProperties(blockName).isPlant();
     }
 
     /**
-     * 判断是否为草方块
+     * Whether a block is a grass block.
      *
-     * @param blockName 方块名称
-     * @return true表示是草方块
+     * @param blockName the block name
+     * @return {@code true} for grass blocks
      */
     public static boolean isGrassBlock(String blockName) {
         return getProperties(blockName).isGrassBlock();
     }
 
     /**
-     * 判断是否为发光方块
+     * Whether a block glows.
      *
-     * @param blockName 方块名称
-     * @return true表示是发光方块
+     * @param blockName the block name
+     * @return {@code true} if it emits light
      */
     public static boolean isGlowing(String blockName) {
         return getProperties(blockName).isGlowing();
     }
 
     /**
-     * 获取光照遮挡值
+     * How much light a block blocks.
      *
-     * @param blockName 方块名称
-     * @return 光照遮挡值（0-15）
+     * @param blockName the block name
+     * @return the light blocking value, 0-15
      */
     public static int getLightBlock(String blockName) {
         return getProperties(blockName).lightBlock();
     }
 
     /**
-     * 获取光照发射值
+     * How much light a block emits.
      *
-     * @param blockName 方块名称
-     * @return 光照发射值（0-15）
+     * @param blockName the block name
+     * @return the light emission value, 0-15
      */
     public static int getLightEmission(String blockName) {
         return getProperties(blockName).lightEmission();
     }
 
     /**
-     * 判断是否可以含水
+     * Whether a block can be waterlogged.
      *
-     * @param blockName 方块名称
-     * @return true表示可以含水
+     * @param blockName the block name
+     * @return {@code true} if it can be waterlogged
      */
     public static boolean canBeWaterlogged(String blockName) {
         return getProperties(blockName).canBeWaterlogged();
     }
 
     /**
-     * 判断是否有原版地图颜色
+     * Whether a block has a vanilla map colour.
      *
-     * @param blockName 方块名称
-     * @return true表示有原版地图颜色
+     * @param blockName the block name
+     * @return {@code true} if it has one
      */
     public static boolean hasVanillaColor(String blockName) {
         return getProperties(blockName).hasVanillaColor();
     }
 
     /**
-     * 判断是否有有效的地图颜色
+     * Whether a block has a usable map colour.
      *
-     * @param blockName 方块名称
-     * @return true表示有有效的地图颜色
+     * @param blockName the block name
+     * @return {@code true} if it has one
      */
     public static boolean hasMapColor(String blockName) {
         return getProperties(blockName).hasMapColor();
     }
 
     /**
-     * 判断是否应该作为overlay处理
+     * Whether a block should be drawn as an overlay.
      *
-     * @param blockName 方块名称
-     * @return true表示应该作为overlay
+     * @param blockName the block name
+     * @return {@code true} if it should be an overlay
      */
     public static boolean shouldOverlay(String blockName) {
         return getProperties(blockName).shouldOverlay();
     }
 
     /**
-     * 判断是否为透明流体
+     * Whether a block is a see-through fluid.
      *
-     * @param blockName 方块名称
-     * @return true表示是透明流体
+     * @param blockName the block name
+     * @return {@code true} for water
      */
     public static boolean isTranslucentFluid(String blockName) {
         return getProperties(blockName).isTranslucentFluid();
     }
 
     /**
-     * 检查含水方块表面
+     * Whether this is the surface of a waterlogged block.
      *
-     * @param blockName 方块名称
-     * @param properties 方块属性键值对
-     * @return true表示是含水方块表面
+     * @param blockName the block name
+     * @param properties the block's property values
+     * @return {@code true} if it is waterlogged
      */
     public static boolean isWaterloggedSurface(String blockName, Map<String, String> properties) {
         return getProperties(blockName).isWaterloggedSurface(properties);
     }
 
     /**
-     * 占位BlockGetter（用于需要BlockGetter参数的API）
+     * A stand-in BlockGetter, for APIs that insist on one.
      *
-     * 提供默认的空气方块和空流体状态，
-     * 用于调用需要BlockGetter参数的方块属性查询方法。
+     * Returns air and empty fluid everywhere; nothing reads real world data through it.
      */
     private static class PlaceholderBlockGetter implements BlockGetter {
         @Override
@@ -978,6 +978,29 @@ public class BlockPropertyResolver {
 
         @Override
         public net.minecraft.world.level.material.FluidState getFluidState(BlockPos pos) {
+            return net.minecraft.world.level.material.Fluids.EMPTY.defaultFluidState();
+        }
+
+        /**
+         * Paper declares {@code getBlockStateIfLoaded} on {@code BlockGetter}; Fabric and
+         * vanilla do not. There is deliberately no {@code @Override}: on Paper this
+         * implements the interface method, on Fabric it is simply a method nothing calls,
+         * and one source tree serves both.
+         *
+         * @param pos the position
+         * @return air; this is a stand-in
+         */
+        public BlockState getBlockStateIfLoaded(BlockPos pos) {
+            return Blocks.AIR.defaultBlockState();
+        }
+
+        /**
+         * As {@link #getBlockStateIfLoaded(BlockPos)}: a Paper-only interface method.
+         *
+         * @param pos the position
+         * @return empty; this is a stand-in
+         */
+        public net.minecraft.world.level.material.FluidState getFluidIfLoaded(BlockPos pos) {
             return net.minecraft.world.level.material.Fluids.EMPTY.defaultFluidState();
         }
 
