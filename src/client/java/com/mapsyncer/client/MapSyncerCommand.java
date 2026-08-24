@@ -35,22 +35,22 @@ import java.util.concurrent.CompletableFuture;
 import java.util.stream.Stream;
 
 /**
- * 地图同步命令处理器。
- * 注册客户端命令 `/mapsyncer`，提供地图同步功能。
+ * The client-side {@code /mapsyncer} command.
+ * Registers the command players use to pull map data from the server.
  *
- * <p>命令结构：</p>
+ * <p>Subcommands:</p>
  * <ul>
- *   <li>/mapsyncer - 显示帮助信息</li>
- *   <li>/mapsyncer help - 显示帮助信息</li>
- *   <li>/mapsyncer sync - 同步当前维度</li>
- *   <li>/mapsyncer sync all - 同步所有维度</li>
- *   <li>/mapsyncer sync &lt;dimension&gt; - 同步指定维度</li>
+ *   <li>/mapsyncer - show help</li>
+ *   <li>/mapsyncer help - show help</li>
+ *   <li>/mapsyncer sync - sync the current dimension</li>
+ *   <li>/mapsyncer sync all - sync every dimension</li>
+ *   <li>/mapsyncer sync &lt;dimension&gt; - sync one dimension</li>
  * </ul>
  *
- * <p>维度参数支持：</p>
+ * <p>The dimension argument accepts:</p>
  * <ul>
- *   <li>原版维度：overworld、the_nether、the_end</li>
- *   <li>模组维度：使用完整的维度ID（如 twilightforest:twilight_forest）</li>
+ *   <li>vanilla dimensions: overworld, the_nether, the_end</li>
+ *   <li>modded dimensions: the full ID, e.g. twilightforest:twilight_forest</li>
  * </ul>
  */
 public class MapSyncerCommand {
@@ -58,10 +58,10 @@ public class MapSyncerCommand {
     private static final Logger LOGGER = LoggerFactory.getLogger(MapSyncerCommand.class);
 
     /**
-     * 注册客户端命令。
-     * 使用 Brigadier 命令系统注册 /mapsyncer 命令及其子命令。
+     * Registers the client command.
+     * Builds the /mapsyncer command tree with Brigadier.
      *
-     * @param dispatcher 命令调度器
+     * @param dispatcher the command dispatcher
      */
     public static void register(CommandDispatcher<FabricClientCommandSource> dispatcher) {
         dispatcher.register(
@@ -93,21 +93,21 @@ public class MapSyncerCommand {
 
     private static int openGui(CommandContext<FabricClientCommandSource> context) {
         Minecraft mc = context.getSource().getClient();
-        mc.execute(() -> mc.setScreen(new MapSyncerScreen()));
+        mc.execute(() -> mc.setScreenAndShow(new MapSyncerScreen()));
         return Command.SINGLE_SUCCESS;
     }
 
     /**
-     * 显示命令帮助信息。
+     * Prints the command help.
      *
-     * @param context 命令上下文
-     * @return 命令执行结果
+     * @param context command context
+     * @return the command result
      */
     private static int showHelp(CommandContext<FabricClientCommandSource> context) {
         Minecraft mc = Minecraft.getInstance();
         if (mc.player == null) return 0;
 
-        // 客户端同步命令
+        // The client-side sync commands.
         mc.player.sendSystemMessage(ChatUtils.prefix().append(ChatUtils.header("mapsyncer.command.help_header")));
         mc.player.sendSystemMessage(ChatUtils.desc("mapsyncer.command.help_sync"));
         mc.player.sendSystemMessage(ChatUtils.desc("mapsyncer.command.help_sync_radius"));
@@ -116,7 +116,7 @@ public class MapSyncerCommand {
         mc.player.sendSystemMessage(ChatUtils.desc("mapsyncer.command.help_gui"));
         mc.player.sendSystemMessage(ChatUtils.header("mapsyncer.command.help_dimension_note"));
 
-        // 如果玩家有OP权限，显示服务端命令
+        // Ops also get the server-side commands.
         if (net.minecraft.commands.Commands.LEVEL_OWNERS.check(context.getSource().getPlayer().permissions())) {
             mc.player.sendSystemMessage(ChatUtils.prefix().append(ChatUtils.header("mapsyncer.help.server.header")));
             mc.player.sendSystemMessage(ChatUtils.desc("mapsyncer.help.server.generate"));
@@ -133,12 +133,12 @@ public class MapSyncerCommand {
     }
 
     /**
-     * 提供维度名称建议。
-     * 包括原版维度、模组维度以及已存在的 Xaero 目录维度。
+     * Suggests dimension names.
+     * Covers vanilla dimensions, modded ones, and any Xaero directory already present.
      *
-     * @param context 命令上下文
-     * @param builder 建议构建器
-     * @return 建议结果的 CompletableFuture
+     * @param context command context
+     * @param builder the suggestion builder
+     * @return the suggestions
      */
     private static CompletableFuture<Suggestions> suggestDimensions(CommandContext<FabricClientCommandSource> context, SuggestionsBuilder builder) {
         builder.suggest("overworld");
@@ -211,11 +211,11 @@ public class MapSyncerCommand {
     }
 
     /**
-     * 将 Xaero 目录名转换为维度 ID。
-     * 处理原版维度和模组维度的转换。
+     * Converts an Xaero directory name back to a dimension ID.
+     * Handles both vanilla and modded dimensions.
      *
-     * @param dirName Xaero 目录名
-     * @return 维度 ID，如果无法转换返回空字符串
+     * @param dirName the Xaero directory name
+     * @return the dimension ID, or an empty string if it cannot be converted
      */
     private static String xaeroDirToDimensionId(String dirName) {
         if ("null".equals(dirName)) return "overworld";
@@ -227,11 +227,11 @@ public class MapSyncerCommand {
     }
 
     /**
-     * 同步指定维度（字符串参数）。
-     * 支持维度名称简写和完整 ID。
+     * Syncs one dimension, named as an argument.
+     * Accepts both short names and full IDs.
      *
-     * @param context 命令上下文
-     * @return 命令执行结果
+     * @param context command context
+     * @return the command result
      */
     private static int executeSyncDimension(CommandContext<FabricClientCommandSource> context) {
         String dimInput = StringArgumentType.getString(context, "dimension");
@@ -251,11 +251,11 @@ public class MapSyncerCommand {
     }
 
     /**
-     * 同步所有维度。
-     * 向服务端请求所有维度的地图数据。
+     * Syncs every dimension.
+     * Asks the server for the map data of all of them.
      *
-     * @param context 命令上下文
-     * @return 命令执行结果
+     * @param context command context
+     * @return the command result
      */
     private static int executeSyncAll(CommandContext<FabricClientCommandSource> context) {
         Minecraft mc = Minecraft.getInstance();
@@ -267,11 +267,11 @@ public class MapSyncerCommand {
     }
 
     /**
-     * 同步当前维度。
-     * 自动检测玩家当前所在维度并发送同步请求。
+     * Syncs the current dimension.
+     * Works out which dimension the player is in and asks for that one.
      *
-     * @param context 命令上下文
-     * @return 命令执行结果
+     * @param context command context
+     * @return the command result
      */
     private static int executeSyncCurrentDim(CommandContext<FabricClientCommandSource> context) {
         Minecraft mc = Minecraft.getInstance();
@@ -285,11 +285,11 @@ public class MapSyncerCommand {
     }
 
     /**
-     * 清除同步状态标记。
-     * 用于忽略上次中断的同步提示。
+     * Clears the stored sync state.
+     * Used to dismiss the prompt about resuming an interrupted sync.
      *
-     * @param context 命令上下文
-     * @return 命令执行结果
+     * @param context command context
+     * @return the command result
      */
     private static int clearSyncState(CommandContext<FabricClientCommandSource> context) {
         ClientJoinHandler.clearSyncState();
@@ -297,12 +297,12 @@ public class MapSyncerCommand {
     }
 
     /**
-     * 解析用户输入的维度名称为完整维度 ID。
-     * 支持简写（如 overworld）和完整 ID（如 minecraft:overworld）。
+     * Resolves a dimension name the player typed into a full dimension ID.
+     * Accepts short names such as overworld and full IDs such as minecraft:overworld.
      *
-     * @param input 用户输入的维度名称
-     * @param level 客户端世界实例
-     * @return 完整的维度 ID
+     * @param input what the player typed
+     * @param level the client's world
+     * @return the full dimension ID
      */
     public static String currentDimensionId(Minecraft mc) {
         if (mc.level == null) {
@@ -346,12 +346,12 @@ public class MapSyncerCommand {
 
 
     /**
-     * 发送同步请求到服务端。
-     * 计算客户端区域哈希，构建同步请求包并发送。
+     * Sends a sync request to the server.
+     * Hashes the client's regions, builds the request and sends it.
      *
-     * @param mc Minecraft 客户端实例
-     * @param dimensionId 维度 ID，如果是同步所有维度使用 "all"
-     * @param syncAll 是否同步所有维度
+     * @param mc the Minecraft client
+     * @param dimensionId the dimension ID, or "all" when syncing everything
+     * @param syncAll whether every dimension is being synced
      */
     static void sendSyncRequest(Minecraft mc, String dimensionId, boolean syncAll) {
         Path serverDir = XaeroMapIntegrator.getCurrentServerDirectory();
@@ -410,8 +410,8 @@ public class MapSyncerCommand {
                                                           String xaeroDim, boolean syncAll) {
         Map<String, ClientMeta> metaMap;
 
-        // 新流程：先发送请求，等服务端确认有数据后再暂停区块更新
-        // 不在这里禁用区块更新，改为在收到服务端 status="ok" 后再暂停
+        // Send the request first and wait for the server to confirm it has data;
+        // chunk updates are only paused once status="ok" comes back.
 
         ClientTimestampCache tsCache = serverDir != null && serverDir.toFile().exists()
                 ? ClientTimestampCache.getInstance(serverDir) : null;
@@ -443,7 +443,7 @@ public class MapSyncerCommand {
             }
         }
 
-        // 标记同步开始（用于断点续传检测）
+        // Mark the sync as started, so an interrupted one can be resumed.
         if (tsCache != null) {
             Set<String> dimensions = new HashSet<>();
             if (syncAll) {
@@ -462,11 +462,11 @@ public class MapSyncerCommand {
     }
 
     /**
-     * 在维度目录下查找 mw$worldId 目录。
-     * Xaero 使用 mw$worldId 格式存储地图数据。
+     * Finds the mw$worldId directory inside a dimension directory.
+     * That is where Xaero keeps its map data.
      *
-     * @param dimDir 维度目录路径
-     * @return mw$ 目录路径，如果未找到返回 null
+     * @param dimDir the dimension directory
+     * @return the mw$ directory, or {@code null} if there is none
      */
     private static Path findMwDir(Path dimDir) {
         if (dimDir == null || !dimDir.toFile().exists()) return null;

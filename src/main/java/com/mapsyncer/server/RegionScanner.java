@@ -1,5 +1,6 @@
 package com.mapsyncer.server;
 
+import com.mapsyncer.platform.Platform;
 import com.mapsyncer.util.DimensionPathMapping;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -17,99 +18,112 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Region文件扫描器 - 扫描Minecraft世界中的区域文件
+ * Finds the region files of a world.
  *
- * 支持 Minecraft 26.1+ 新格式和传统格式：
- * - 新格式：dimensions/<namespace>/<dimension_name>/region/
- * - 传统格式：region/, DIM-1/region/, DIM1/region/, DIM{id}/region/
+ * Handles both save layouts:
+ * - current (26.1+): dimensions/&lt;namespace&gt;/&lt;dimension&gt;/region/
+ * - legacy: region/, DIM-1/region/, DIM1/region/, DIM{id}/region/
  *
- * 自动检测实际使用的格式，优先检查新格式。
- * 跳过空的MCA文件（0字节），避免处理无数据的区域。
+ * The layout is detected at runtime, current format first. Empty (0-byte) MCA files are
+ * skipped, since they hold no chunks.
  */
 public class RegionScanner {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(RegionScanner.class);
 
-    /** MCA/MCR文件名匹配正则表达式 */
+    /** Matches MCA/MCR region file names. */
     private static final Pattern REGION_PATTERN = Pattern.compile("^r\\.(-?[0-9]+)\\.(-?[0-9]+)\\.mc[ar]$");
 
     /**
-     * 区域坐标记录
+     * A region's coordinates.
      *
-     * @param x 区域X坐标
-     * @param z 区域Z坐标
+     * @param x region X coordinate
+     * @param z region Z coordinate
      */
     public record RegionCoords(int x, int z) {
     }
 
     /**
-     * 区域扫描结果
+     * The result of scanning one directory.
      *
-     * @param regions 扫描到的区域坐标列表
-     * @param skippedEmptyCount 跳过的空文件数量
+     * @param regions regions that were found
+     * @param skippedEmptyCount how many empty files were skipped
      */
     public record RegionScanResult(List<RegionCoords> regions, int skippedEmptyCount) {
     }
 
     /**
-     * 维度区域数据
+     * The regions of one dimension.
      *
-     * @param dimension 维度ResourceKey
-     * @param regions 区域坐标列表
-     * @param skippedEmptyCount 跳过的空文件数量
+     * @param dimension the dimension key
+     * @param regions regions that were found
+     * @param skippedEmptyCount how many empty files were skipped
      */
     public record DimensionRegions(net.minecraft.resources.ResourceKey<Level> dimension, List<RegionCoords> regions, int skippedEmptyCount) {
     }
 
     /**
-     * 扫描服务器所有维度的region文件
+     * Scans the region files of every loaded dimension.
      *
-     * @param server Minecraft服务器实例
-     * @return 所有维度的区域数据列表
+     * @param server the running server
+     * @return one entry per dimension
      */
     public static List<DimensionRegions> scanAllDimensions(MinecraftServer server) {
-        List<DimensionNames> dimNames = new ArrayList<>();
+        List<ServerLevel> levels = new ArrayList<>();
         for (ServerLevel level : server.getAllLevels()) {
             String dimId = level.dimension().identifier().getPath();
-            if (!dimNames.stream().anyMatch(d -> d.name().equals(dimId))) {
-                dimNames.add(new DimensionNames(dimId, level.dimension()));
+            if (levels.stream().noneMatch(l -> l.dimension().identifier().getPath().equals(dimId))) {
+                levels.add(level);
             }
         }
 
         List<DimensionRegions> result = new ArrayList<>();
-        for (DimensionNames dn : dimNames) {
-            RegionScanResult scanResult = scanRegionDir(server.getWorldPath(LevelResource.ROOT), dn.key());
-            result.add(new DimensionRegions(dn.key(), scanResult.regions(), scanResult.skippedEmptyCount()));
+        for (ServerLevel level : levels) {
+            Path regionDir = getRegionDir(level);
+            RegionScanResult scanResult = regionDir == null
+                    ? new RegionScanResult(List.of(), 0)
+                    : scanRegionDirectory(regionDir);
+            result.add(new DimensionRegions(level.dimension(), scanResult.regions(), scanResult.skippedEmptyCount()));
         }
         return result;
     }
 
     /**
-     * 扫描指定维度的region文件
+     * Scans the region files of one dimension.
      *
-     * @param level 服务端维度实例
-     * @return 该维度的扫描结果
+     * @param level the dimension
+     * @return what was found
      */
     public static RegionScanResult scanDimension(ServerLevel level) {
-        Path worldRoot = level.getServer().getWorldPath(LevelResource.ROOT);
-        return scanRegionDir(worldRoot, level.dimension());
+        Path regionDir = getRegionDir(level);
+        if (regionDir == null) {
+            return new RegionScanResult(List.of(), 0);
+        }
+        return scanRegionDirectory(regionDir);
     }
 
     /**
-     * 获取指定维度的region目录路径
+     * Locates the region directory of a dimension.
      *
-     * 自动检测实际使用的格式（新格式优先）：
-     * 1. 新格式（26.1+）：dimensions/<namespace>/<dimension_name>/region/
-     * 2. 传统格式：region/（主世界）、DIM-1/region/（地狱）、DIM1/region/（末地）
-     * 3. Mod预设：DIM{id}/region/
+     * Tries, in order:
+     * 1. whatever the platform reports directly (Paper asks Bukkit for the world's path)
+     * 2. current format (26.1+): dimensions/&lt;namespace&gt;/&lt;dimension&gt;/region/
+     * 3. legacy format: region/ (overworld), DIM-1/region/ (nether), DIM1/region/ (end)
+     * 4. modded legacy: DIM{id}/region/
      *
-     * 检测结果会被缓存到DimensionPathMapping中。
+     * What it finds is cached in DimensionPathMapping.
      *
-     * @param level 服务端维度实例
-     * @return region目录路径，如果未找到返回null
+     * @param level the dimension
+     * @return the region directory, or {@code null} if none was found
      */
     public static Path getRegionDir(ServerLevel level) {
         try {
+            // Prefer the directory the platform names outright (Paper asks Bukkit).
+            Path platformRegionDir = Platform.get().regionDir(level);
+            if (platformRegionDir != null && Files.isDirectory(platformRegionDir)) {
+                return platformRegionDir.toRealPath();
+            }
+
             Path worldRoot = level.getServer().getWorldPath(LevelResource.ROOT);
             if (!Files.exists(worldRoot)) return null;
             worldRoot = worldRoot.toRealPath();
@@ -117,7 +131,7 @@ public class RegionScanner {
             DimensionPathMapping mapping = DimensionPathMapping.getInstance();
             String dimId = level.dimension().identifier().toString();
 
-            // 使用统一的检测方法（优先新格式，回退传统格式）
+            // Otherwise probe the layouts, current format first.
             Path regionDir = mapping.detectRegionDir(worldRoot, dimId);
 
             if (regionDir != null && Files.exists(regionDir)) {
@@ -133,36 +147,12 @@ public class RegionScanner {
     }
 
     /**
-     * 扫描维度目录中的region文件
+     * Lists the MCA files in a directory.
      *
-     * 使用DimensionPathMapping检测region目录位置。
+     * Region coordinates come from the file names; empty (0-byte) files are skipped.
      *
-     * @param worldRoot 世界根目录
-     * @param dimensionKey 维度ResourceKey
-     * @return 扫描结果
-     */
-    private static RegionScanResult scanRegionDir(Path worldRoot, net.minecraft.resources.ResourceKey<Level> dimensionKey) {
-        DimensionPathMapping mapping = DimensionPathMapping.getInstance();
-        String dimId = dimensionKey.identifier().toString();
-
-        // 使用统一的检测方法
-        Path regionDir = mapping.detectRegionDir(worldRoot, dimId);
-
-        if (regionDir == null || !Files.exists(regionDir)) {
-            LOGGER.warn("Region directory not found for dimension: {}", dimId);
-            return new RegionScanResult(List.of(), 0);
-        }
-
-        return scanRegionDirectory(regionDir);
-    }
-
-    /**
-     * 扫描region目录中的所有MCA文件
-     *
-     * 解析文件名提取区域坐标，跳过空文件（0字节）。
-     *
-     * @param regionDir region目录路径
-     * @return 扫描结果（包含region坐标列表和跳过的空文件数量）
+     * @param regionDir the directory to scan
+     * @return the regions found and the number of empty files skipped
      */
     public static RegionScanResult scanRegionDirectory(Path regionDir) {
         List<RegionCoords> regions = new ArrayList<>();
@@ -204,12 +194,4 @@ public class RegionScanner {
 
         return new RegionScanResult(regions, skippedEmpty);
     }
-
-    /**
-     * 维度名称内部记录
-     *
-     * @param name 维度名称
-     * @param key 维度ResourceKey
-     */
-    private record DimensionNames(String name, net.minecraft.resources.ResourceKey<Level> key) {}
 }

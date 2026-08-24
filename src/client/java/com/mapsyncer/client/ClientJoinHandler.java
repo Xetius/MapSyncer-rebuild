@@ -15,7 +15,7 @@ import org.slf4j.LoggerFactory;
 import java.nio.file.Path;
 
 /**
- * 客户端玩家加入事件处理器 - 检测未完成的同步并提示断点续传
+ * Runs when the client joins a server: spots an unfinished sync and offers to resume it.
  */
 public class ClientJoinHandler {
 

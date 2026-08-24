@@ -17,36 +17,36 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 方块颜色映射器
- * 参考 Xaero WorldMap 的颜色获取实现
- * 支持原版方块、mod 方块和纹理颜色提取
+ * Works out what colour a block should be on the map.
+ * Follows how Xaero's World Map picks colours.
+ * Handles vanilla blocks, modded blocks and texture sampling.
  *
- * 使用四层颜色获取策略：
- * 1. 纹理颜色提取（仅客户端可用）
+ * Four strategies, tried in order:
+ * 1. sample the texture (client only, so never on a server)
  * 2. MapColor API
- * 3. 原版方块精确颜色
- * 4. 启发式规则（基于方块名称模式）
+ * 3. exact colours for common vanilla blocks
+ * 4. heuristics based on the block's name
  */
 public class BlockColorMapper {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(BlockColorMapper.class);
 
-    /** 方块颜色查询结果缓存 */
+    /** Cached colour per block. */
     private static final ConcurrentHashMap<String, Integer> blockColorCache = new ConcurrentHashMap<>();
 
-    /** 纹理颜色缓存 */
+    /** Cached texture colours. */
     private static final ConcurrentHashMap<String, Integer> textureColorCache = new ConcurrentHashMap<>();
 
-    /** 有问题的方块集合（MapColor 抛出异常） */
+    /** Blocks whose MapColor lookup threw, so it is not retried. */
     private static final ConcurrentHashMap<String, Boolean> buggedBlocks = new ConcurrentHashMap<>();
 
-    /** 缓存最大条目数（防止无界增长） */
+    /** Cache ceiling, so it cannot grow without bound. */
     private static final int MAX_CACHE_SIZE = 5000;
 
-    /** 缓存是否需要清除的标志 */
+    /** Set when the caches should be dropped. */
     private static volatile boolean clearCachedColors = false;
 
-    /** 启发式规则：基于方块名称模式的默认颜色 */
+    /** Heuristics: default colour per block-name pattern. */
     private static final Map<String, Integer> patternColors = new HashMap<>();
 
     static {
@@ -54,28 +54,28 @@ public class BlockColorMapper {
     }
 
     /**
-     * 初始化启发式颜色模式规则
+     * Fills in the name-pattern heuristics.
      *
      * @return void
      */
     private static void initPatternColors() {
-        // 矿石类 - 金色
+        // Ores: gold
         patternColors.put("_ore", 0xFDF546);
         patternColors.put("_deepslate_ore", 0xFDF546);
 
-        // 原木类 - 棕色
+        // Logs: brown
         patternColors.put("_log", 0x6B5231);
         patternColors.put("_wood", 0x6B5231);
         patternColors.put("_stem", 0x6B5231);
         patternColors.put("_hyphae", 0x6B5231);
 
-        // 树叶类 - 绿色
+        // Leaves: green
         patternColors.put("_leaves", 0x3A7D23);
 
-        // 木板类 - 木色
+        // Planks: wood
         patternColors.put("_planks", 0xBC945A);
 
-        // 石头类 - 灰色
+        // Stone: grey
         patternColors.put("stone", 0x808080);
         patternColors.put("_stone", 0x808080);
         patternColors.put("cobblestone", 0x7F7F7F);
@@ -83,7 +83,7 @@ public class BlockColorMapper {
         patternColors.put("deepslate", 0x6B6B6B);
         patternColors.put("_deepslate", 0x6B6B6B);
 
-        // 土类 - 土色
+        // Dirt: earth
         patternColors.put("dirt", 0x866043);
         patternColors.put("_dirt", 0x866043);
         patternColors.put("grass_block", 0x5B8731);
@@ -91,22 +91,22 @@ public class BlockColorMapper {
         patternColors.put("podzol", 0x6B5231);
         patternColors.put("mycelium", 0x6B5231);
 
-        // 砂类 - 砂色
+        // Sand: sand
         patternColors.put("sand", 0xD9E090);
         patternColors.put("_sand", 0xD9E090);
         patternColors.put("sandstone", 0xD7D2A0);
         patternColors.put("_sandstone", 0xD7D2A0);
         patternColors.put("gravel", 0x848484);
 
-        // 水类 - 蓝色
+        // Water: blue
         patternColors.put("water", 0x3344FF);
         patternColors.put("_water", 0x3344FF);
 
-        // 熔岩类 - 橙色
+        // Lava: orange
         patternColors.put("lava", 0xFF6600);
         patternColors.put("_lava", 0xFF6600);
 
-        // 下界类 - 红色
+        // Nether: red
         patternColors.put("netherrack", 0x723131);
         patternColors.put("_netherrack", 0x723131);
         patternColors.put("nether_bricks", 0x2A1515);
@@ -116,21 +116,21 @@ public class BlockColorMapper {
         patternColors.put("crimson_", 0x8B3030);
         patternColors.put("warped_", 0x2E7B5E);
 
-        // 末地类 - 末地色
+        // End: end stone
         patternColors.put("end_stone", 0xD6D69D);
         patternColors.put("_end_stone", 0xD6D69D);
 
-        // 冰类 - 冰色
+        // Ice: pale blue
         patternColors.put("ice", 0xA0D0FF);
         patternColors.put("_ice", 0xA0D0FF);
         patternColors.put("snow", 0xFAFAFF);
         patternColors.put("_snow", 0xFAFAFF);
 
-        // 玻璃类 - 浅蓝白色
+        // Glass: pale blue-white
         patternColors.put("glass", 0xE0F0FF);
         patternColors.put("_glass", 0xE0F0FF);
 
-        // 金属类 - 金属色
+        // Metals
         patternColors.put("iron", 0xD8AF8A);
         patternColors.put("_iron", 0xD8AF8A);
         patternColors.put("gold", 0xFDF546);
@@ -148,56 +148,56 @@ public class BlockColorMapper {
         patternColors.put("netherite", 0x4A4A4A);
         patternColors.put("_netherite", 0x4A4A4A);
 
-        // 草类 - 绿色
+        // Grass: green
         patternColors.put("grass", 0x7ABD47);
         patternColors.put("fern", 0x5B8731);
         patternColors.put("seagrass", 0x5B8731);
         patternColors.put("kelp", 0x5B8731);
         patternColors.put("cactus", 0x5B8731);
 
-        // 花 - 花色
+        // Flowers
         patternColors.put("flower", 0xFF69B4);
         patternColors.put("rose", 0xFF3333);
         patternColors.put("tulip", 0xFF9999);
         patternColors.put("dandelion", 0xFFFF00);
         patternColors.put("orchid", 0x3399FF);
 
-        // 双层花 - 需要根据 half 属性处理
-        // 向日葵上半部分（花头）- 黄色
+        // Tall flowers: colour depends on the half property
+        // Sunflower top (the head): yellow
         patternColors.put("sunflower_upper", 0xFFD700);
-        // 向日葵下半部分（茎）- 绿色（已在 PLANT 覆盖）
-        // 玫瑰丛上半部分（花）- 红色
+        // Sunflower bottom (the stem): green, already covered by PLANT
+        // Rose bush top (the flower): red
         patternColors.put("rose_bush_upper", 0xFF3333);
-        // 牡丹上半部分（花）- 粉色
+        // Peony top (the flower): pink
         patternColors.put("peony_upper", 0xFFB6C1);
-        // 猪笼草上半部分（花）- 紫色
+        // Pitcher plant top (the flower): purple
         patternColors.put("pitcher_plant_upper", 0x9932CC);
 
-        // 羊毛类
+        // Wool
         patternColors.put("wool", 0xFFFFFF);
         patternColors.put("_wool", 0xFFFFFF);
 
-        // 陶瓦类
+        // Terracotta
         patternColors.put("terracotta", 0xC9674B);
         patternColors.put("_terracotta", 0xC9674B);
 
-        // 混凝土类
+        // Concrete
         patternColors.put("concrete", 0x808080);
         patternColors.put("_concrete", 0x808080);
 
-        // 发光类
+        // Light sources
         patternColors.put("glowstone", 0xFFCC66);
         patternColors.put("shroomlight", 0xFFCC66);
         patternColors.put("lantern", 0xFFCC66);
         patternColors.put("lamp", 0xFFCC66);
         patternColors.put("sea_lantern", 0xE0E8FF);
 
-        // 建筑类
+        // Building blocks
         patternColors.put("bricks", 0xB54B3D);
         patternColors.put("_bricks", 0xB54B3D);
         patternColors.put("brick", 0xB54B3D);
 
-        // 基岩
+        // Bedrock
         patternColors.put("bedrock", 0x333333);
         patternColors.put("obsidian", 0x1A1A2E);
         patternColors.put("_obsidian", 0x1A1A2E);
@@ -205,10 +205,10 @@ public class BlockColorMapper {
     }
 
     /**
-     * 获取方块颜色（通过 BlockState）
+     * The colour of a block state.
      *
-     * @param state 方块状态
-     * @return 方块颜色值（ARGB 格式）
+     * @param state the block state
+     * @return the colour, in ARGB
      */
     public static int getBlockColor(BlockState state) {
         String blockName = getKey(state);
@@ -217,8 +217,8 @@ public class BlockColorMapper {
     }
 
     /**
-     * 检查缓存大小，超过限制时清理。
-     * 防止服务端长期运行导致无界缓存增长。
+     * Drops the caches once they pass their ceiling,
+     * so a long-running server cannot grow them without bound.
      */
     private static void checkCacheSize() {
         if (blockColorCache.size() > MAX_CACHE_SIZE || textureColorCache.size() > MAX_CACHE_SIZE) {
@@ -230,15 +230,15 @@ public class BlockColorMapper {
     }
 
     /**
-     * 获取方块颜色（通过方块名称和属性）
-     * 用于处理需要根据属性确定颜色的方块（如双层花的 half 属性）
+     * The colour of a block, given its name and properties.
+     * For blocks whose colour depends on a property, such as the half of a tall flower.
      *
-     * @param blockName 方块名称
-     * @param properties 方块属性
-     * @return 颜色值
+     * @param blockName the block's registry name
+     * @param properties the block's properties
+     * @return the colour
      */
     public static int getBlockColorWithProperties(String blockName, Map<String, String> properties) {
-        // 特殊处理：双层花的 half 属性
+        // Special case: the half property of tall flowers.
         if (properties != null && properties.containsKey("half")) {
             String half = properties.get("half");
             String key = blockName + "_" + half;
@@ -248,26 +248,26 @@ public class BlockColorMapper {
             }
         }
 
-        // 默认使用方块名称获取颜色
+        // Otherwise go by name alone.
         return getBlockColorByName(blockName);
     }
 
     /**
-     * 获取方块颜色（通过方块名称）
+     * The colour of a block, given only its name.
      */
     public static int getBlockColorByName(String blockName) {
         return blockColorCache.computeIfAbsent(blockName, BlockColorMapper::computeColorByName);
     }
 
     /**
-     * 计算方块颜色（使用四层策略）
+     * Works out a block's colour using the four strategies.
      *
-     * @param state 方块状态
-     * @param blockName 方块注册名
-     * @return 计算得出的颜色值
+     * @param state the block state
+     * @param blockName the block's registry name
+     * @return the colour
      */
     private static int computeColor(BlockState state, String blockName) {
-        // 检查是否需要清除缓存
+        // Drop the caches first if that was asked for.
         if (clearCachedColors) {
             blockColorCache.clear();
             textureColorCache.clear();
@@ -275,42 +275,42 @@ public class BlockColorMapper {
             LOGGER.debug("BlockColorMapper cache cleared");
         }
 
-        // 检查是否为问题方块
+        // Skip blocks whose lookup threw before.
         if (buggedBlocks.containsKey(blockName)) {
             return computeColorFromPattern(blockName);
         }
 
-        // 第一层：纹理颜色提取在服务端不可用，跳过
+        // 1. Texture sampling is client-only, so it is skipped here.
 
-        // 第二层：尝试 MapColor API
+        // 2. The MapColor API.
         int mapColor = tryGetMapColor(state, blockName);
         if (mapColor != -1) {
             return mapColor;
         }
 
-        // 第三层：原版方块精确颜色
+        // 3. Exact colours for common vanilla blocks.
         int vanillaColor = getVanillaBlockColor(state);
         if (vanillaColor != -1) {
             return vanillaColor;
         }
 
-        // 第四层：启发式规则
+        // 4. Name heuristics.
         return computeColorFromPattern(blockName);
     }
 
     /**
-     * 计算方块颜色（通过名称，无法获取 BlockState 时）
+     * Works out a block's colour from its name, when there is no BlockState to hand.
      *
-     * @param blockName 方块注册名
-     * @return 计算得出的颜色值
+     * @param blockName the block's registry name
+     * @return the colour
      */
     private static int computeColorByName(String blockName) {
-        // 检查是否为问题方块
+        // Skip blocks whose lookup threw before.
         if (buggedBlocks.containsKey(blockName)) {
             return computeColorFromPattern(blockName);
         }
 
-        // 尝试获取方块并使用 BlockState
+        // Try to find the block and use its default state.
         try {
             Identifier location = Identifier.parse(blockName);
             Optional<Block> blockOpt = BuiltInRegistries.BLOCK.getOptional(location);
@@ -323,37 +323,37 @@ public class BlockColorMapper {
             LOGGER.debug("Failed to parse block name: {}", blockName);
         }
 
-        // 使用启发式规则
+        // Otherwise fall back to the name heuristics.
         return computeColorFromPattern(blockName);
     }
 
     /**
-     * 尝试从 MapColor API 获取颜色
+     * Asks the MapColor API for a colour.
      *
-     * @param state 方块状态
-     * @param blockName 方块注册名
-     * @return MapColor 颜色值，失败返回 -1
+     * @param state the block state
+     * @param blockName the block's registry name
+     * @return the colour, or -1 if MapColor could not supply one
      */
     private static int tryGetMapColor(BlockState state, String blockName) {
         try {
-            // 创建占位 BlockGetter
+            // A stand-in BlockGetter, since MapColor wants one.
             BlockGetter placeholderBlockGetter = new PlaceholderBlockGetter();
             BlockPos placeholderPos = BlockPos.ZERO;
 
             MapColor mapColor = state.getMapColor(placeholderBlockGetter, placeholderPos);
 
             if (mapColor != null && mapColor.col != 0) {
-                // MapColor 的颜色值
+                // The MapColor's colour.
                 int color = getMapColorValue(mapColor);
-                if (color != 0x808080) {  // 不是默认灰色
+                if (color != 0x808080) {  // anything but the default grey
                     return color;
                 }
-                // 使用 MapColor 的原始 col 值
+                // Fall back to the MapColor's raw col value.
                 return mapColor.col;
             }
 
         } catch (Throwable t) {
-            // 记录有问题的方块
+            // Remember the block threw, so it is not retried.
             buggedBlocks.put(blockName, true);
             LOGGER.debug("Broken vanilla map color definition found: {}", blockName);
         }
@@ -362,14 +362,14 @@ public class BlockColorMapper {
     }
 
     /**
-     * 从 MapColor 获取颜色值
-     * 参考：https://minecraft.wiki/w/Map_color
+     * Turns a MapColor into an RGB value.
+     * Reference: https://minecraft.wiki/w/Map_color
      *
-     * @param mapColor MapColor 对象
-     * @return RGB 颜色值
+     * @param mapColor the map colour
+     * @return the RGB value
      */
     private static int getMapColorValue(MapColor mapColor) {
-        // MapColor 的颜色 ID 到 RGB 的映射
+        // MapColor ID to RGB.
         return switch (mapColor.id) {
             case 0 -> 0x808080;  // NONE
             case 1 -> 0x5B8731;  // GRASS
@@ -409,15 +409,15 @@ public class BlockColorMapper {
     }
 
     /**
-     * 原版方块精确颜色（保持与之前一致的视觉效果）
+     * Exact colours for common vanilla blocks, so the map looks as it always has.
      *
-     * @param state 方块状态
-     * @return 精确颜色值，非原版方块返回 -1
+     * @param state the block state
+     * @return the colour, or -1 for anything not listed here
      */
     private static int getVanillaBlockColor(BlockState state) {
         Block block = state.getBlock();
 
-        // 常见原版方块精确颜色
+        // Common vanilla blocks.
         if (block == Blocks.GRASS_BLOCK) return 0x5B8731;
         if (block == Blocks.STONE) return 0x808080;
         if (block == Blocks.DIRT) return 0x866043;
@@ -468,19 +468,19 @@ public class BlockColorMapper {
         if (block == Blocks.DEEPSLATE_LAPIS_ORE) return 0x3355FF;
         if (block == Blocks.DEEPSLATE_EMERALD_ORE) return 0x33FF66;
 
-        return -1;  // 未找到原版方块
+        return -1;  // not one of the listed vanilla blocks
     }
 
     /**
-     * 从方块名称模式推断颜色（启发式规则）
+     * Guesses a colour from the block's name.
      *
-     * @param blockName 方块注册名
-     * @return 推断得出的颜色值，默认返回灰色
+     * @param blockName the block's registry name
+     * @return the guessed colour, grey if nothing matched
      */
     private static int computeColorFromPattern(String blockName) {
         String name = blockName.toLowerCase();
 
-        // 检查模式匹配（优先匹配最长模式）
+        // Longest matching pattern wins.
         String bestMatch = null;
         int bestLength = 0;
 
@@ -498,32 +498,32 @@ public class BlockColorMapper {
             return patternColors.get(bestMatch);
         }
 
-        // 默认灰色
+        // Nothing matched: grey.
         return 0x808080;
     }
 
     /**
-     * 获取方块的注册表键名
+     * The registry name of a block state.
      *
-     * @param state 方块状态
-     * @return 方块注册名（如 "minecraft:stone"）
+     * @param state the block state
+     * @return the registry name, e.g. "minecraft:stone"
      */
     public static String getKey(BlockState state) {
         return BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
     }
 
     /**
-     * 获取方块的注册表键名
+     * The registry name of a block.
      *
-     * @param block 方块对象
-     * @return 方块注册名（如 "minecraft:stone"）
+     * @param block the block
+     * @return the registry name, e.g. "minecraft:stone"
      */
     public static String getKey(Block block) {
         return BuiltInRegistries.BLOCK.getKey(block).toString();
     }
 
     /**
-     * 清除缓存
+     * Empties the caches.
      *
      * @return void
      */
@@ -535,28 +535,24 @@ public class BlockColorMapper {
     }
 
     /**
-     * 获取缓存大小
-     *
-     * @return 方块颜色缓存中的条目数量
+     * @return how many block colours are cached
      */
     public static int getCacheSize() {
         return blockColorCache.size();
     }
 
     /**
-     * 获取纹理缓存大小
-     *
-     * @return 纹理颜色缓存中的条目数量
+     * @return how many texture colours are cached
      */
     public static int getTextureCacheSize() {
         return textureColorCache.size();
     }
 
     /**
-     * 添加自定义颜色规则（用于配置扩展）
+     * Adds a custom colour rule, for configuration.
      *
-     * @param pattern 方块名称模式（如 "_ore"）
-     * @param color 颜色值（RGB 格式）
+     * @param pattern a block-name pattern, e.g. "_ore"
+     * @param color the RGB colour
      * @return void
      */
     public static void addPatternColor(String pattern, int color) {
@@ -564,9 +560,9 @@ public class BlockColorMapper {
     }
 
     /**
-     * 批量添加自定义颜色规则
+     * Adds several custom colour rules at once.
      *
-     * @param colors 颜色规则 Map（模式 -> 颜色值）
+     * @param colors pattern to colour
      * @return void
      */
     public static void addPatternColors(Map<String, Integer> colors) {
@@ -576,16 +572,16 @@ public class BlockColorMapper {
     }
 
     /**
-     * 占位 BlockGetter（用于需要 BlockGetter 参数的 API）
+     * A stand-in BlockGetter, for APIs that insist on one.
      *
-     * 提供空的 BlockGetter 实现，用于调用需要 BlockGetter 参数的方法时作为占位参数使用
+     * Returns air and empty fluid everywhere; nothing reads real world data through it.
      */
     private static class PlaceholderBlockGetter implements BlockGetter {
         /**
-         * 获取指定位置的方块实体
+         * The block entity at a position.
          *
-         * @param pos 方块位置
-         * @return null（占位实现）
+         * @param pos the position
+         * @return {@code null}; this is a stand-in
          */
         @Override
         public net.minecraft.world.level.block.entity.BlockEntity getBlockEntity(BlockPos pos) {
@@ -593,10 +589,10 @@ public class BlockColorMapper {
         }
 
         /**
-         * 获取指定位置的方块状态
+         * The block state at a position.
          *
-         * @param pos 方块位置
-         * @return AIR 方块的默认状态（占位实现）
+         * @param pos the position
+         * @return air; this is a stand-in
          */
         @Override
         public BlockState getBlockState(BlockPos pos) {
@@ -604,10 +600,10 @@ public class BlockColorMapper {
         }
 
         /**
-         * 获取指定位置的流体状态
+         * The fluid state at a position.
          *
-         * @param pos 方块位置
-         * @return EMPTY 流体的默认状态（占位实现）
+         * @param pos the position
+         * @return empty; this is a stand-in
          */
         @Override
         public net.minecraft.world.level.material.FluidState getFluidState(BlockPos pos) {
@@ -615,9 +611,32 @@ public class BlockColorMapper {
         }
 
         /**
-         * 获取世界高度
+         * Paper declares {@code getBlockStateIfLoaded} on {@code BlockGetter}; Fabric and
+         * vanilla do not. There is deliberately no {@code @Override}: on Paper this
+         * implements the interface method, on Fabric it is simply a method nothing calls,
+         * and one source tree serves both.
          *
-         * @return 256（占位实现）
+         * @param pos the position
+         * @return air; this is a stand-in
+         */
+        public BlockState getBlockStateIfLoaded(BlockPos pos) {
+            return Blocks.AIR.defaultBlockState();
+        }
+
+        /**
+         * As {@link #getBlockStateIfLoaded(BlockPos)}: a Paper-only interface method.
+         *
+         * @param pos the position
+         * @return empty; this is a stand-in
+         */
+        public net.minecraft.world.level.material.FluidState getFluidIfLoaded(BlockPos pos) {
+            return net.minecraft.world.level.material.Fluids.EMPTY.defaultFluidState();
+        }
+
+        /**
+         * World height.
+         *
+         * @return 256; this is a stand-in
          */
         @Override
         public int getHeight() {
@@ -625,9 +644,9 @@ public class BlockColorMapper {
         }
 
         /**
-         * 获取最小建筑高度
+         * Lowest build height.
          *
-         * @return -64（占位实现）
+         * @return -64; this is a stand-in
          */
         @Override
         public int getMinY() {

@@ -33,65 +33,64 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * 地图数据包接收器。
- * 处理从服务端接收的地图同步数据包，并负责写入到 Xaero 地图目录。
+ * Receives map data from the server and writes it into Xaero's map directory.
  *
- * <p>主要功能：</p>
+ * <p>What it does:</p>
  * <ul>
- *   <li>处理同步请求、响应和进度更新</li>
- *   <li>写入同步数据到 Xaero 目录，边接收边加载</li>
- *   <li>重置区域加载状态，触发地图重新加载</li>
- *   <li>检测超时和陈旧的同步请求，防止内存泄漏</li>
- *   <li>同步当前维度时，预先卸载视野范围内的region以便重新加载服务端数据</li>
+ *   <li>handles the sync request, response and progress packets</li>
+ *   <li>writes each region as it arrives and loads it straight away</li>
+ *   <li>resets Xaero's region state so the new data is picked up</li>
+ *   <li>spots timed-out and stale syncs, so nothing is left accumulating</li>
+ *   <li>when syncing the current dimension, unloads nearby regions first so the server's data replaces them</li>
  * </ul>
  */
 public class MapPacketReceiver {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(MapPacketReceiver.class);
 
-    /** 同步是否正在进行中，用于协调区块更新的禁用 */
+    /** Whether a sync is running, which chunk-update pausing keys off. */
     private static volatile boolean syncInProgress = false;
 
     /**
-     * 检查同步是否正在进行中。
+     * Whether a sync is running.
      *
-     * @return true 表示同步正在进行
+     * @return {@code true} while one is in progress
      */
     public static boolean isSyncInProgress() {
         return syncInProgress;
     }
 
-    /** 服务端是否已安装 MapSyncer（加入服务器时检测） */
+    /** Whether this server has MapSyncer, learned when joining. */
     private static volatile boolean serverInstalled = false;
 
-    /** 服务端版本号 */
+    /** The server's version. */
     private static volatile String serverVersion = "";
 
-    /** 最后写入的 mw 目录，用于缓存清除 */
+    /** The last mw directory written to, for cache clearing. */
     private static volatile Path lastMwDir = null;
 
-    /** 同步开始时间，用于检测陈旧的同步（防止内存泄漏） */
+    /** When the sync started, used to spot stale syncs. */
     private static volatile long syncStartTime = 0;
 
-    /** 陈旧同步超时时间（10分钟） */
+    /** How long before a sync counts as stale: 10 minutes. */
     private static final long STALE_SYNC_TIMEOUT_MS = 10 * 60 * 1000;
 
-    /** 客户端同步写盘线程，避免网络包处理和文件 IO 阻塞客户端主线程。 */
+    /** Writes to disk off the main thread, so packet handling never blocks the client. */
     private static final ExecutorService SYNC_WORKER = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "mapsyncer-client-sync-worker");
         thread.setDaemon(true);
         return thread;
     });
 
-    /** 每 tick 最多刷新多少个 Xaero region，避免同步时集中反射刷新导致掉帧。 */
+    /** Xaero regions refreshed per tick, so reflection-driven refreshes do not drop frames. */
     private static final int REGION_RELOAD_BATCH_SIZE = 10;
     private static final long REGION_RELOAD_BATCH_DELAY_MS = 2_000;
 
-    /** 等待在客户端主线程触发 Xaero 刷新的 region 队列。 */
+    /** Regions waiting to be refreshed on the client thread. */
     private static final ConcurrentLinkedQueue<PendingRegionLoad> pendingRegionLoads = new ConcurrentLinkedQueue<>();
     private static final ConcurrentLinkedQueue<PendingRegionLoad> externalRegionLoads = new ConcurrentLinkedQueue<>();
 
-    /** 用于丢弃断线、取消或新同步开始后遗留的旧同步任务。 */
+    /** Discards work left over from a disconnect, a cancellation, or a newer sync. */
     private static final AtomicLong syncGeneration = new AtomicLong();
     private static final Map<String, IncomingRegionParts> incomingRegionParts = new ConcurrentHashMap<>();
     private static final Map<Path, List<Path>> cacheDirectoriesByMwDir = new ConcurrentHashMap<>();
@@ -100,13 +99,13 @@ public class MapPacketReceiver {
     private static volatile int completionRegionCount = 0;
     private static volatile long lastRegionReloadFlushMillis = 0;
 
-    /** 同步期间更新的区域坐标集合（仅存储坐标，不存储数据，节省内存） */
+    /** Regions updated during this sync; coordinates only, to keep memory flat. */
     private static final Set<XaeroMapIntegrator.RegionCoord> updatedRegionCoords = ConcurrentHashMap.newKeySet();
 
-    /** 已加载的区域集合（避免重复加载） */
+    /** Regions already loaded, so none is loaded twice. */
     private static final Set<XaeroMapIntegrator.RegionCoord> loadedRegions = ConcurrentHashMap.newKeySet();
 
-    /** 反射 API 缓存（避免重复反射调用开销） */
+    /** Cached reflection handles, so the lookups happen once. */
     private static volatile Object cachedMapProcessor = null;
     private static volatile Object cachedMapSaveLoad = null;
     private static volatile Method cachedGetLeafMapRegion = null;
@@ -116,14 +115,14 @@ public class MapPacketReceiver {
     private static volatile Method cachedSetHasHadTerrain = null;
     private static volatile Method cachedCancelRefresh = null;
 
-    /** 反射 API 是否已初始化 */
+    /** Whether the reflection cache has been initialised. */
     private static volatile boolean reflectionInitialized = false;
 
     /**
-     * 检查当前同步是否陈旧（运行时间过长）。
-     * 陈旧的同步可能表示连接中断，需要清除数据。
+     * Whether the current sync has been running too long.
+     * A stale sync usually means the connection dropped, so its data should be discarded.
      *
-     * @return 如果同步陈旧返回 true；否则返回 false
+     * @return {@code true} if the sync is stale
      */
     public static boolean isSyncStale() {
         if (!syncInProgress || syncStartTime == 0) {
@@ -133,8 +132,8 @@ public class MapPacketReceiver {
     }
 
     /**
-     * 清除所有累积的同步数据，防止内存泄漏。
-     * 在同步中断或变得陈旧时调用。
+     * Discards everything accumulated by the current sync.
+     * Called when a sync is interrupted or goes stale.
      */
     public static void clearSyncData() {
         syncGeneration.incrementAndGet();
@@ -156,17 +155,17 @@ public class MapPacketReceiver {
     }
 
     /**
-     * 清除累积的区域坐标集合，释放内存。
-     * 在同步完成、中断或服务器停止时调用。
+     * Clears the set of updated region coordinates.
+     * Called when a sync finishes or is interrupted, and when the client stops.
      */
     public static void clearReceivedChunks() {
         updatedRegionCoords.clear();
     }
 
     /**
-     * 检查服务端是否已安装 MapSyncer
+     * Whether this server has MapSyncer.
      *
-     * @return true 表示服务端已安装
+     * @return {@code true} if it does
      */
     public static boolean isServerInstalled() {
         return serverInstalled;
@@ -177,7 +176,7 @@ public class MapPacketReceiver {
     }
 
     /**
-     * 重置服务端安装状态（离开服务器时调用）
+     * Forgets the server's install state, on leaving the server.
      */
     public static void resetServerStatus() {
         serverInstalled = false;
@@ -196,19 +195,19 @@ public class MapPacketReceiver {
     }
 
     /**
-     * 处理服务端返回的同步响应数据包。
-     * 实现边接收边加载优化，每个 region 写入后立即触发加载。
+     * Handles a sync response from the server.
+     * Each region is loaded as soon as it is written, rather than waiting for the whole sync.
      *
-     * <p>状态处理：</p>
+     * <p>By status:</p>
      * <ul>
-     *   <li>"ok" - 有数据同步，流式处理每个 region</li>
-     *   <li>"uptodate" - 地图已是最新，直接返回</li>
-     *   <li>"no_cache" - 服务端无缓存，直接返回</li>
-     *   <li>"dim_not_available" - 维度不存在，直接返回</li>
+     *   <li>"ok": data follows, so stream it in</li>
+     *   <li>"uptodate": nothing to do</li>
+     *   <li>"no_cache": the server has no cache, so nothing to do</li>
+     *   <li>"dim_not_available": no such dimension, so nothing to do</li>
      * </ul>
      *
-     * @param payload 同步响应数据包
-     * @param context 数据包上下文
+     * @param payload the sync response
+     * @param context the packet context
      */
     public static void handleSyncResponse(PacketHandler.SyncResponsePayload payload, ClientPlayNetworking.Context context) {
         context.client().execute(() -> {
@@ -221,7 +220,7 @@ public class MapPacketReceiver {
             Path serverDir = XaeroMapIntegrator.getCurrentServerDirectory();
             DefaultMapMigration.schedule(serverDir);
 
-            // 根据状态决定处理方式
+            // What to do depends on the status.
             if ("no_cache".equals(status) || "dim_not_available".equals(status)) {
                 LOGGER.info("Server returned error status: {}, no sync needed", status);
                 SyncProgressTracker.cancelTracking();
@@ -240,7 +239,7 @@ public class MapPacketReceiver {
                 return;
             }
 
-            // status == "ok"，有数据需要同步
+            // status == "ok": there is data to take.
             if (isSyncStale()) {
                 SyncProgressTracker.cancelTracking();
                 clearSyncData();
@@ -252,7 +251,7 @@ public class MapPacketReceiver {
                 return;
             }
 
-            // 首次收到数据时初始化反射缓存
+            // Set up the reflection cache on the first packet of data.
             if (!syncInProgress) {
                 syncInProgress = true;
                 syncStartTime = System.currentTimeMillis();
@@ -270,8 +269,8 @@ public class MapPacketReceiver {
                 initializeReflectionCache();
             }
 
-            // 获取当前视距范围（用于判断视距内/外）
-            // 注意：视距判断需要使用 chunk 的 caveLayer，而不是默认的地表层
+            // The current view distance, to tell near regions from far ones.
+            // Note this has to use the chunk's caveLayer, not the surface layer.
             Minecraft mc = Minecraft.getInstance();
             boolean isCaveDimension = mc.level != null && mc.level.dimension() == Level.NETHER;
             String currentXaeroDim = mc.level != null
@@ -303,11 +302,11 @@ public class MapPacketReceiver {
     }
 
     /**
-     * 处理服务端发送的进度更新数据包。
-     * 更新同步进度追踪器的状态。
+     * Handles a progress update from the server.
+     * Passes it to the progress tracker.
      *
-     * @param payload 进度更新数据包
-     * @param context 数据包上下文
+     * @param payload the progress update
+     * @param context the packet context
      */
     public static void handleSyncProgress(PacketHandler.SyncProgressPayload payload, ClientPlayNetworking.Context context) {
         context.client().execute(() ->
@@ -349,8 +348,8 @@ public class MapPacketReceiver {
     }
 
     /**
-     * 同步完成后恢复区块更新状态。
-     * 不再使用全局暂停机制。
+     * Resumes chunk updates once the sync is done.
+     * The old global pause is no longer used.
      */
     private static void resumeChunkUpdates() {
         syncInProgress = false;
@@ -720,7 +719,7 @@ public class MapPacketReceiver {
         }
 
         int totalReceived = completionRegionCount;
-        LOGGER.info("同步完成: 总计 {} 个区域已处理", totalReceived);
+        LOGGER.info("Sync complete: {} regions processed", totalReceived);
 
         if (!updatedRegionCoords.isEmpty()) {
             XaeroMapIntegrator.recordUpdatedRegionCoords(new HashSet<>(updatedRegionCoords));
@@ -735,7 +734,7 @@ public class MapPacketReceiver {
     }
 
     /**
-     * 清理同步状态（非反射缓存）。
+     * Clears the sync state, leaving the reflection cache alone.
      */
     private static void clearSyncState() {
         updatedRegionCoords.clear();
@@ -752,7 +751,7 @@ public class MapPacketReceiver {
     }
 
     /**
-     * 清理反射 API 缓存。
+     * Clears the reflection cache.
      */
     private static void clearReflectionCache() {
         reflectionInitialized = false;
@@ -766,11 +765,11 @@ public class MapPacketReceiver {
         cachedCancelRefresh = null;
     }
 
-    // ========== 边接收边加载优化方法 ==========
+    // ========== Loading regions as they arrive ==========
 
     /**
-     * 初始化反射 API 缓存（一次性，避免重复反射开销）。
-     * 在首次收到同步数据时调用。
+     * Sets up the reflection cache, once.
+     * Called on the first packet of sync data.
      */
     private static void initializeReflectionCache() {
         if (reflectionInitialized) return;
@@ -779,31 +778,31 @@ public class MapPacketReceiver {
             Minecraft mc = Minecraft.getInstance();
             if (mc.player == null) return;
 
-            // 获取 WorldMapSession
+            // WorldMapSession
             Class<?> worldMapSessionClass = Class.forName("xaero.map.WorldMapSession");
             Object session = worldMapSessionClass.getMethod("getCurrentSession").invoke(null);
             if (session == null) {
-                LOGGER.warn("无法初始化反射缓存: WorldMapSession 为空");
+                LOGGER.warn("Cannot initialise the reflection cache: WorldMapSession is null");
                 return;
             }
 
-            // 获取 MapProcessor
+            // MapProcessor
             Class<?> mapProcessorClass = Class.forName("xaero.map.MapProcessor");
             cachedMapProcessor = worldMapSessionClass.getMethod("getMapProcessor").invoke(session);
             if (cachedMapProcessor == null) {
-                LOGGER.warn("无法初始化反射缓存: MapProcessor 为空");
+                LOGGER.warn("Cannot initialise the reflection cache: MapProcessor is null");
                 return;
             }
 
-            // 获取 MapSaveLoad
+            // MapSaveLoad
             Class<?> mapSaveLoadClass = Class.forName("xaero.map.file.MapSaveLoad");
             cachedMapSaveLoad = mapProcessorClass.getMethod("getMapSaveLoad").invoke(cachedMapProcessor);
             if (cachedMapSaveLoad == null) {
-                LOGGER.warn("无法初始化反射缓存: MapSaveLoad 为空");
+                LOGGER.warn("Cannot initialise the reflection cache: MapSaveLoad is null");
                 return;
             }
 
-            // 缓存常用反射方法和字段
+            // Cache the methods and fields used repeatedly.
             cachedGetLeafMapRegion = mapProcessorClass.getMethod("getLeafMapRegion", int.class, int.class, int.class, boolean.class);
             cachedRequestLoad = mapSaveLoadClass.getMethod("requestLoad", Class.forName("xaero.map.region.MapRegion"), String.class, boolean.class);
 
@@ -819,57 +818,57 @@ public class MapPacketReceiver {
 
             reflectionInitialized = true;
 
-            // 关键：设置 regionDetectionComplete = true，否则 getLeafMapRegion 会返回 null
+            // regionDetectionComplete has to be true, or getLeafMapRegion returns null.
             Method setRegionDetectionComplete = mapSaveLoadClass.getMethod("setRegionDetectionComplete", boolean.class);
             setRegionDetectionComplete.invoke(cachedMapSaveLoad, true);
 
-            LOGGER.info("反射 API 缓存已初始化，regionDetectionComplete=true");
+            LOGGER.info("Reflection cache initialised, regionDetectionComplete=true");
 
         } catch (Exception e) {
-            LOGGER.error("初始化反射缓存失败", e);
+            LOGGER.error("Failed to initialise the reflection cache", e);
         }
     }
 
     /**
-     * 立即加载单个区域。
-     * 使用缓存的反射 API，设置 shouldCache=true 确保加载后生成缓存。
+     * Loads one region immediately.
+     * Uses the cached reflection handles and sets shouldCache=true so a cache is written.
      *
-     * 视距内 region：使用 requestLoad(prioritize=true) 插入队头，优先加载
-     * 视距外 region：直接添加到 toLoad 队列队尾，绕过 loadingFiles 检查
+     * Regions in view go through requestLoad(prioritize=true), which puts them at the front;
+     * regions out of view are appended to the toLoad queue directly, bypassing loadingFiles.
      *
-     * @param coord 区域坐标
-     * @param caveLayer 洞穴层编号，地表层使用 Integer.MAX_VALUE
-     * @param inViewDistance 是否在视距内（用于优先级判断）
+     * @param coord the region
+     * @param caveLayer the cave layer, or {@code Integer.MAX_VALUE} for the surface
+     * @param inViewDistance whether the region is within view distance
      */
     private static void triggerSingleRegionLoad(XaeroMapIntegrator.RegionCoord coord, int caveLayer, boolean inViewDistance) {
         if (!reflectionInitialized || cachedMapProcessor == null) {
-            LOGGER.warn("反射缓存未初始化，无法加载区域 ({}, {}) layer={}", coord.x(), coord.z(), caveLayer);
+            LOGGER.warn("Reflection cache not initialised; cannot load region ({}, {}) layer={}", coord.x(), coord.z(), caveLayer);
             return;
         }
 
-        // 避免重复加载
+        // Do not load the same region twice.
         if (loadedRegions.contains(coord)) {
-            LOGGER.debug("区域 ({}, {}) layer={} 已加载，跳过", coord.x(), coord.z(), caveLayer);
+            LOGGER.debug("Region ({}, {}) layer={} already loaded, skipping", coord.x(), coord.z(), caveLayer);
             return;
         }
 
         try {
-            // 获取或创建 MapRegion - 使用正确的 caveLayer
+            // Get or create the MapRegion, with the right caveLayer.
             Object mapRegion = cachedGetLeafMapRegion.invoke(cachedMapProcessor,
                 caveLayer, coord.x(), coord.z(), true);
             if (mapRegion == null) {
-                LOGGER.warn("无法创建 MapRegion ({}, {}) layer={}", coord.x(), coord.z(), caveLayer);
+                LOGGER.warn("Cannot create MapRegion ({}, {}) layer={}", coord.x(), coord.z(), caveLayer);
                 return;
             }
 
-            // 清除 refresh 状态
+            // Clear the refresh flag.
             cachedCancelRefresh.invoke(mapRegion, cachedMapProcessor);
 
-            // 设置 shouldCache=true，确保完整加载条件满足
+            // shouldCache=true, so the load counts as complete.
             cachedShouldCacheField.setBoolean(mapRegion, true);
 
-            // 关键：设置 hasHadTerrain=true，否则 loadCacheTextures 会直接返回元数据
-            // 如果 hasHadTerrain=false，加载时会跳过完整数据加载
+            // hasHadTerrain has to be true as well, or loadCacheTextures returns just the
+            // metadata and skips the actual data.
             cachedSetHasHadTerrain.invoke(mapRegion);
 
             cachedLoadStateField.setByte(mapRegion, (byte) 4);
@@ -881,15 +880,15 @@ public class MapPacketReceiver {
             loadedRegions.add(coord);
 
         } catch (Exception e) {
-            LOGGER.warn("立即加载区域 ({}, {}) layer={} 失败: {}", coord.x(), coord.z(), caveLayer, e.getMessage());
+            LOGGER.warn("Failed to load region ({}, {}) layer={}: {}", coord.x(), coord.z(), caveLayer, e.getMessage());
         }
     }
 
     /**
-     * 清除单个区域的缓存文件。
-     * 在区域立即加载前调用，确保加载最新数据。
+     * Deletes one region's cache file.
+     * Called before loading a region, so the newest data is what gets read.
      *
-     * @param coord 区域坐标
+     * @param coord the region
      */
     private static void clearSingleRegionCache(XaeroMapIntegrator.RegionCoord coord) {
         clearSingleRegionCache(coord, lastMwDir);
@@ -906,9 +905,9 @@ public class MapPacketReceiver {
             if (cacheFile.toFile().exists()) {
                 try {
                     java.nio.file.Files.deleteIfExists(cacheFile);
-                    LOGGER.debug("已清除缓存: {}", cacheFile);
+                    LOGGER.debug("Cleared cache: {}", cacheFile);
                 } catch (Exception e) {
-                    LOGGER.warn("清除缓存失败: {}", cacheFile);
+                    LOGGER.warn("Failed to clear cache: {}", cacheFile);
                 }
                 return;
             }
@@ -954,10 +953,10 @@ public class MapPacketReceiver {
     }
 
     /**
-     * 构建时间戳缓存的服务器格式相对路径。
+     * Builds the timestamp cache path in the form the server uses.
      *
-     * @param chunk 区块数据
-     * @return 相对路径字符串
+     * @param chunk the region's data
+     * @return the relative path
      */
     private static String buildRelativePathForCache(ChunkMapData chunk) {
         String xaeroDim = chunk.dimension;
@@ -969,11 +968,11 @@ public class MapPacketReceiver {
     }
 
     /**
-     * 在 mw 目录下查找所有缓存目录。
-     * 缓存目录命名格式：cache、cache_1、cache_<version>。
+     * Finds every cache directory under an mw directory.
+     * They are named cache, cache_1, cache_&lt;version&gt;.
      *
-     * @param mwDir mw 目录路径
-     * @return 缓存目录列表
+     * @param mwDir the mw directory
+     * @return the cache directories
      */
     private static java.util.List<Path> findCacheDirectories(Path mwDir) {
         java.util.List<Path> cacheDirs = new java.util.ArrayList<>();
@@ -1008,10 +1007,10 @@ public class MapPacketReceiver {
     }
 
     /**
-     * 卸载视野范围内的region以便同步当前维度时重新加载服务端数据。
-     * 在同步当前维度时调用。
+     * Unloads nearby regions so the server's data replaces what is on screen.
+     * Called when syncing the dimension the player is currently in.
      *
-     * @param targetDimension 目标维度（Xaero格式）
+     * @param targetDimension the dimension being synced, in Xaero's form
      */
     public static void prepareSyncForDimension(String targetDimension) {
         Minecraft mc = Minecraft.getInstance();
@@ -1019,12 +1018,12 @@ public class MapPacketReceiver {
             return;
         }
 
-        // 检查是否同步当前维度
+        // Only when syncing the dimension the player is in.
         String currentXaeroDim = DimensionPathMapping.getInstance().toXaeroDimension(
                 mc.level.dimension().identifier().toString());
 
         if (targetDimension.equals(currentXaeroDim)) {
-            // 同步当前维度，卸载视野范围内的region
+        // Unload the regions within view.
             LOGGER.info("Syncing current dimension {}, unloading view distance regions", targetDimension);
             int unloaded = XaeroMapIntegrator.unloadViewDistanceRegions();
             if (unloaded > 0 && mc.player != null) {

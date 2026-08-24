@@ -11,7 +11,7 @@
 	"environment": "*",
 	"entrypoints": {
 		"main": [
-			"com.mapsyncer.MapSyncer"
+			"com.mapsyncer.fabric.MapSyncerFabric"
 		],
 		"client": [
 			"com.mapsyncer.client.MapSyncerClient"

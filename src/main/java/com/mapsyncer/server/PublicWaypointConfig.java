@@ -3,9 +3,9 @@ package com.mapsyncer.server;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.mapsyncer.MapSyncer;
+import com.mapsyncer.platform.Platform;
 import com.mapsyncer.network.PacketHandler;
 import com.mapsyncer.util.HashUtils;
-import net.fabricmc.loader.api.FabricLoader;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -16,8 +16,17 @@ import java.util.List;
 
 public final class PublicWaypointConfig {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
-    private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir()
-            .resolve("mapsyncer-public-waypoints.json");
+    /**
+     * Path to the public waypoint config file.
+     *
+     * <p>The directory comes from the platform: {@code config/} on Fabric,
+     * {@code plugins/MapSyncer/} on Paper.</p>
+     *
+     * @return the config file path
+     */
+    private static Path configPath() {
+        return Platform.configDir().resolve("mapsyncer-public-waypoints.json");
+    }
 
     private static volatile Config config = defaultConfig();
     private static volatile PacketHandler.PublicWaypointsPayload cachedPayload;
@@ -27,7 +36,7 @@ public final class PublicWaypointConfig {
     }
 
     public static void load() {
-        if (!Files.exists(CONFIG_PATH)) {
+        if (!Files.exists(configPath())) {
             config = defaultConfig();
             rebuildCache();
             save();
@@ -35,10 +44,10 @@ public final class PublicWaypointConfig {
         }
 
         try {
-            Config loaded = GSON.fromJson(Files.readString(CONFIG_PATH), Config.class);
+            Config loaded = GSON.fromJson(Files.readString(configPath()), Config.class);
             config = sanitize(loaded);
             rebuildCache();
-            MapSyncer.LOGGER.info("Loaded public waypoints from {}", CONFIG_PATH);
+            MapSyncer.LOGGER.info("Loaded public waypoints from {}", configPath());
         } catch (Exception e) {
             config = defaultConfig();
             rebuildCache();
@@ -52,8 +61,8 @@ public final class PublicWaypointConfig {
 
     private static boolean save(Config configToSave) {
         try {
-            Files.createDirectories(CONFIG_PATH.getParent());
-            Files.writeString(CONFIG_PATH, GSON.toJson(configToSave));
+            Files.createDirectories(configPath().getParent());
+            Files.writeString(configPath(), GSON.toJson(configToSave));
             return true;
         } catch (IOException e) {
             MapSyncer.LOGGER.error("Failed to save public waypoint config", e);

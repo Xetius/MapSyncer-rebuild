@@ -12,16 +12,17 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 网络包处理器
+ * Every packet MapSyncer sends between client and server.
  *
- * <p>负责定义和处理MapSyncer模组的所有网络通信包。
- * 包含同步请求、同步响应和同步进度三种类型的网络包。</p>
+ * <p>Defines the channel IDs and the payload records, each with its own encoder and
+ * decoder. The byte layouts here are the protocol: the Fabric server and the Paper
+ * plugin both produce exactly these bytes.</p>
  *
- * <p>网络包类型：</p>
+ * <p>The core three:</p>
  * <ul>
- *   <li>{@link SyncRequestPayload} - 客户端发送的同步请求，包含本地region元数据</li>
- *   <li>{@link SyncResponsePayload} - 服务端发送的同步响应，包含需要更新的地图数据</li>
- *   <li>{@link SyncProgressPayload} - 服务端发送的同步进度通知</li>
+ *   <li>{@link SyncRequestPayload} - client to server, the metadata of what it already has</li>
+ *   <li>{@link SyncResponsePayload} - server to client, the map data it is missing</li>
+ *   <li>{@link SyncProgressPayload} - server to client, how far along the sync is</li>
  * </ul>
  */
 public class PacketHandler {
@@ -34,13 +35,13 @@ public class PacketHandler {
     private static final int MAX_WAYPOINTS = 10_000;
     private static final int MAX_WAYPOINT_FIELD_LENGTH = 256;
 
-    /** 同步请求包的资源定位符 */
+    /** Channel: sync request. */
     public static final Identifier SYNC_REQUEST_ID = Identifier.fromNamespaceAndPath(
             MapSyncer.MOD_ID, "sync_request");
-    /** 同步响应包的资源定位符 */
+    /** Channel: sync response. */
     public static final Identifier SYNC_RESPONSE_ID = Identifier.fromNamespaceAndPath(
             MapSyncer.MOD_ID, "sync_response");
-    /** 同步进度包的资源定位符 */
+    /** Channel: sync progress. */
     public static final Identifier SYNC_PROGRESS_ID = Identifier.fromNamespaceAndPath(
             MapSyncer.MOD_ID, "sync_progress");
     public static final Identifier SYNC_REGION_PART_ID = Identifier.fromNamespaceAndPath(
@@ -58,7 +59,7 @@ public class PacketHandler {
     public static final Identifier PUBLIC_WAYPOINT_ADD_RESULT_ID = Identifier.fromNamespaceAndPath(
             MapSyncer.MOD_ID, "public_waypoint_add_result");
 
-    /** 服务端已安装通知包的资源定位符 */
+    /** Channel: "this server has MapSyncer". */
     public static final Identifier SERVER_INSTALLED_ID = Identifier.fromNamespaceAndPath(
             MapSyncer.MOD_ID, "server_installed");
     public static final Identifier ADMIN_STATUS_REQUEST_ID = Identifier.fromNamespaceAndPath(
@@ -85,26 +86,26 @@ public class PacketHandler {
             MapSyncer.MOD_ID, "voxy_sync_complete");
 
     /**
-     * 同步请求包 - 客户端发送各region的元数据（时间戳+哈希）
+     * Sync request: the client's per-region metadata, a timestamp and a hash each.
      *
-     * <p>客户端通过此包向服务端报告本地已有的地图数据状态，
-     * 服务端据此判断哪些数据需要同步。</p>
+     * <p>Tells the server what map data the client already holds, so the server can work
+     * out what is missing.</p>
      *
-     * @param clientMeta 客户端元数据映射，键为region路径，值为时间戳和哈希值
+     * @param clientMeta region path to the client's timestamp and hash for it
      */
     public record SyncRequestPayload(Map<String, ClientMeta> clientMeta) implements CustomPacketPayload {
-        /** 包类型标识 */
+        /** The payload type. */
         public static final Type<SyncRequestPayload> TYPE = new Type<>(SYNC_REQUEST_ID);
-        /** 流编解码器，用于网络传输的序列化和反序列化 */
+        /** Stream codec used to read and write this payload. */
         public static final StreamCodec<RegistryFriendlyByteBuf, SyncRequestPayload> STREAM_CODEC = StreamCodec.of(
                 SyncRequestPayload::encode, SyncRequestPayload::decode
         );
 
         /**
-         * 将同步请求包编码到网络缓冲区
+         * Writes a sync request to a network buffer.
          *
-         * @param buf     网络缓冲区
-         * @param payload 要编码的请求包
+         * @param buf     the network buffer
+         * @param payload the request to write
          */
         public static void encode(RegistryFriendlyByteBuf buf, SyncRequestPayload payload) {
             buf.writeInt(payload.clientMeta.size());
@@ -116,10 +117,10 @@ public class PacketHandler {
         }
 
         /**
-         * 从网络缓冲区解码同步请求包
+         * Reads a sync request from a network buffer.
          *
-         * @param buf 网络缓冲区
-         * @return 解码后的同步请求包
+         * @param buf the network buffer
+         * @return the decoded request
          */
         public static SyncRequestPayload decode(RegistryFriendlyByteBuf buf) {
             int size = buf.readInt();
@@ -137,9 +138,9 @@ public class PacketHandler {
         }
 
         /**
-         * 获取此负载的包类型
+         * The payload type.
          *
-         * @return 包类型标识
+         * @return the payload type
          */
         @Override
         public Type<? extends CustomPacketPayload> type() {
@@ -203,29 +204,29 @@ public class PacketHandler {
     }
 
     /**
-     * 同步响应包 - 服务端发送需要更新的地图数据
+     * Sync response: map data the client needs.
      *
-     * <p>服务端通过此包将需要同步的地图数据发送给客户端。
-     * 可能包含多个region的数据，并标识是否为最后一包。</p>
+     * <p>Carries the data for one or more regions and says whether this is the last
+     * response of the sync.</p>
      *
-     * @param chunks     地图数据列表，包含需要更新的region数据
-     * @param isComplete 是否为最后一包（true表示同步完成）
-     * @param worldId    世界ID，用于客户端识别当前同步的世界
-     * @param status     同步状态："ok"=有数据同步, "uptodate"=已是最新, "no_cache"=无缓存, "dim_not_available"=维度不存在
+     * @param chunks     the regions being sent
+     * @param isComplete {@code true} when this is the last response
+     * @param worldId    world ID, so the client knows which world this belongs to
+     * @param status     "ok" = data follows, "uptodate" = nothing to send, "no_cache" = server has no cache, "dim_not_available" = no such dimension
      */
     public record SyncResponsePayload(List<ChunkMapData> chunks, boolean isComplete, int worldId, String status) implements CustomPacketPayload {
-        /** 包类型标识 */
+        /** The payload type. */
         public static final Type<SyncResponsePayload> TYPE = new Type<>(SYNC_RESPONSE_ID);
-        /** 流编解码器，用于网络传输的序列化和反序列化 */
+        /** Stream codec used to read and write this payload. */
         public static final StreamCodec<RegistryFriendlyByteBuf, SyncResponsePayload> STREAM_CODEC = StreamCodec.of(
                 SyncResponsePayload::encode, SyncResponsePayload::decode
         );
 
         /**
-         * 将同步响应包编码到网络缓冲区
+         * Writes a sync response to a network buffer.
          *
-         * @param buf     网络缓冲区
-         * @param payload 要编码的响应包
+         * @param buf     the network buffer
+         * @param payload the response to write
          */
         public static void encode(RegistryFriendlyByteBuf buf, SyncResponsePayload payload) {
             buf.writeInt(payload.worldId);
@@ -238,10 +239,10 @@ public class PacketHandler {
         }
 
         /**
-         * 从网络缓冲区解码同步响应包
+         * Reads a sync response from a network buffer.
          *
-         * @param buf 网络缓冲区
-         * @return 解码后的同步响应包
+         * @param buf the network buffer
+         * @return the decoded response
          */
         public static SyncResponsePayload decode(RegistryFriendlyByteBuf buf) {
             int worldId = buf.readInt();
@@ -256,9 +257,9 @@ public class PacketHandler {
         }
 
         /**
-         * 获取此负载的包类型
+         * The payload type.
          *
-         * @return 包类型标识
+         * @return the payload type
          */
         @Override
         public Type<? extends CustomPacketPayload> type() {
@@ -267,27 +268,27 @@ public class PacketHandler {
     }
 
     /**
-     * 同步进度包 - 服务端发送同步进度通知
+     * Sync progress: how far the current sync has got.
      *
-     * <p>用于向客户端报告当前同步进度，让客户端能够显示进度条或状态信息。</p>
+     * <p>Lets the client show a progress bar or status text.</p>
      *
-     * @param processed 已处理的region数量
-     * @param total     总region数量
-     * @param status    当前状态描述文本
+     * @param processed regions handled so far
+     * @param total     regions in total
+     * @param status    a short description of the current step
      */
     public record SyncProgressPayload(int processed, int total, String status) implements CustomPacketPayload {
-        /** 包类型标识 */
+        /** The payload type. */
         public static final Type<SyncProgressPayload> TYPE = new Type<>(SYNC_PROGRESS_ID);
-        /** 流编解码器，用于网络传输的序列化和反序列化 */
+        /** Stream codec used to read and write this payload. */
         public static final StreamCodec<RegistryFriendlyByteBuf, SyncProgressPayload> STREAM_CODEC = StreamCodec.of(
                 SyncProgressPayload::encode, SyncProgressPayload::decode
         );
 
         /**
-         * 将同步进度包编码到网络缓冲区
+         * Writes a progress update to a network buffer.
          *
-         * @param buf     网络缓冲区
-         * @param payload 要编码的进度包
+         * @param buf     the network buffer
+         * @param payload the update to write
          */
         public static void encode(RegistryFriendlyByteBuf buf, SyncProgressPayload payload) {
             buf.writeInt(payload.processed);
@@ -296,19 +297,19 @@ public class PacketHandler {
         }
 
         /**
-         * 从网络缓冲区解码同步进度包
+         * Reads a progress update from a network buffer.
          *
-         * @param buf 网络缓冲区
-         * @return 解码后的同步进度包
+         * @param buf the network buffer
+         * @return the decoded update
          */
         public static SyncProgressPayload decode(RegistryFriendlyByteBuf buf) {
             return new SyncProgressPayload(buf.readInt(), buf.readInt(), buf.readUtf());
         }
 
         /**
-         * 获取此负载的包类型
+         * The payload type.
          *
-         * @return 包类型标识
+         * @return the payload type
          */
         @Override
         public Type<? extends CustomPacketPayload> type() {
@@ -317,11 +318,11 @@ public class PacketHandler {
     }
 
     /**
-     * 服务端已安装通知包 - 服务端在玩家加入时发送
+     * Sent to a client when it joins, to say this server has MapSyncer.
      *
-     * <p>用于告知客户端服务端已安装 MapSyncer，客户端可以据此提前知道服务端状态。</p>
+     * <p>Lets the client know up front that syncing is available here.</p>
      *
-     * @param version 服务端模组版本号
+     * @param version the server's mod or plugin version
      */
     public record SyncRegionPartPayload(
             String syncId,
@@ -441,22 +442,22 @@ public class PacketHandler {
     }
 
     public record ServerInstalledPayload(String version) implements CustomPacketPayload {
-        /** 包类型标识 */
+        /** The payload type. */
         public static final Type<ServerInstalledPayload> TYPE = new Type<>(SERVER_INSTALLED_ID);
-        /** 流编解码器 */
+        /** Stream codec. */
         public static final StreamCodec<RegistryFriendlyByteBuf, ServerInstalledPayload> STREAM_CODEC = StreamCodec.of(
                 ServerInstalledPayload::encode, ServerInstalledPayload::decode
         );
 
         /**
-         * 编码到网络缓冲区
+         * Writes this payload to a network buffer.
          */
         public static void encode(RegistryFriendlyByteBuf buf, ServerInstalledPayload payload) {
             buf.writeUtf(payload.version);
         }
 
         /**
-         * 从网络缓冲区解码
+         * Reads this payload from a network buffer.
          */
         public static ServerInstalledPayload decode(RegistryFriendlyByteBuf buf) {
             return new ServerInstalledPayload(buf.readUtf());

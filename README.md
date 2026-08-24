@@ -1,159 +1,219 @@
-# MapSyncer Rebuild for Xaero World Map
+# MapSyncer Rebuild for Xaero's World Map
 
-MapSyncer Rebuild 是一个 Fabric 服务端/客户端双端 mod，用于把服务端已经探索或已经生成的地图区域同步到客户端的 Xaero World Map，并提供公共路标、半径同步、增量缓存生成、Voxy 同步和客户端 GUI。
+MapSyncer Rebuild sends map regions the server has already generated or explored to each player's Xaero's World Map, and adds public waypoints, radius syncing, incremental cache generation, Voxy syncing and a client GUI.
 
-> 本项目基于 [RuoChennn/MapSyncer-for-XaeroWorldmap](https://github.com/RuoChennn/MapSyncer-for-XaeroWorldmap) 改写。  
-> 当前 Rebuild 版本由 **ShanHe_YF** 制作、整理和维护。
+The client is a Fabric mod. The server comes in two forms — pick one:
 
-## 目录
+- **Fabric mod**: the same jar as the client, dropped into a Fabric server's `mods/`.
+- **Paper plugin**: a separate `-paper.jar`, dropped into a Paper server's `plugins/` (Purpur and other Paper forks included).
 
-- [项目说明](#项目说明)
-- [当前版本](#当前版本)
-- [主要特性](#主要特性)
-- [安装要求](#安装要求)
-- [快速开始](#快速开始)
-- [客户端 GUI](#客户端-gui)
-- [命令说明](#命令说明)
-- [配置文件](#配置文件)
-- [公共路标同步](#公共路标同步)
-- [Xaero 默认地图与迁移](#xaero-默认地图与迁移)
-- [Voxy 同步](#voxy-同步)
-- [性能与同步策略](#性能与同步策略)
-- [版本命名规则](#版本命名规则)
-- [许可证](#许可证)
-- [构建项目](#构建项目)
-- [常见问题](#常见问题)
-- [致谢](#致谢)
+Both servers run the same sync logic and speak the same protocol, so the client cannot tell which one it is connected to.
 
-## 项目说明
+> Based on [RuoChennn/MapSyncer-for-XaeroWorldmap](https://github.com/RuoChennn/MapSyncer-for-XaeroWorldmap).
+> This Rebuild is maintained by **ShanHe_YF**.
 
-原版 Xaero World Map 的地图数据主要存放在客户端本地。如果玩家首次进入一个已经探索过很久的服务器，客户端通常需要自己重新探索地图，才能看到完整地形。MapSyncer Rebuild 的目标是让服务端把已经生成好的地图缓存下发给客户端，让玩家更快拿到服务器端已有的世界地图数据。
+## Contents
 
-这个 Rebuild 版本重点整理了以下方向：
+- [About](#about)
+- [Versions](#versions)
+- [Features](#features)
+- [Requirements](#requirements)
+- [Getting started](#getting-started)
+- [Paper servers](#paper-servers)
+- [Client GUI](#client-gui)
+- [Commands](#commands)
+- [Configuration](#configuration)
+- [Public waypoints](#public-waypoints)
+- [The default Xaero map and migration](#the-default-xaero-map-and-migration)
+- [Voxy syncing](#voxy-syncing)
+- [Performance and sync strategy](#performance-and-sync-strategy)
+- [Version numbering](#version-numbering)
+- [Licence](#licence)
+- [Building](#building)
+- [FAQ](#faq)
+- [Credits](#credits)
 
-- 适配当前 Fabric 模板和 Minecraft `26.1.2`。
-- 普通地图同步固定写入 Xaero 的 `mw$default`，避免重复创建第二个 `mw$map`。
-- 增加/整理客户端 GUI，普通玩家和 OP 管理功能分区显示。
-- 支持公共路标同步，并尽量避免覆盖玩家私人路标。
-- 支持半径同步、增量扫描、脏 region 追踪和自适应同步限速。
-- 提供 Voxy 同步入口，用于可选的 Voxy 地图数据同步。
+## About
 
-## 当前版本
+Xaero's World Map normally keeps its map data on the client. A player joining a long-established server has to re-explore everything themselves before the map fills in. MapSyncer Rebuild has the server hand over the map cache it already has, so players get the server's view of the world straight away.
 
-| 项目 | 版本 |
+This Rebuild focuses on:
+
+- Running on both Fabric servers and Paper servers from one codebase.
+- Targeting the current Fabric release and Minecraft `26.2`.
+- Writing ordinary map syncs into Xaero's `mw$default`, rather than creating a second `mw$map`.
+- A client GUI that separates ordinary player features from admin ones.
+- Public waypoints that do not trample players' private waypoints.
+- Radius syncing, incremental scanning, dirty-region tracking and adaptive throttling.
+- Optional Voxy syncing.
+
+## Versions
+
+| Item | Version |
 | --- | --- |
-| Mod 版本 | `mapsyncer-rebuild-26.1.2-0.3` |
-| Minecraft / Fabric | `26.1.2` |
-| Fabric Loader | 推荐 `0.19.3`，运行时 `>=0.19.0` |
-| Fabric API | 推荐 `0.151.0+26.1.2`，运行时 `*` |
+| Version | `mapsyncer-rebuild-26.2-0.1` |
+| Minecraft | `26.2` |
+| Fabric Loader | `0.19.3` recommended, `>=0.19.0` at runtime |
+| Fabric API | `0.158.0+26.2` recommended, `*` at runtime |
 | Fabric Loom | `1.16.3` |
-| Gradle Wrapper | `9.4.1` |
+| Paper | `26.2` (built against `26.2.build.116-stable`) |
+| paperweight-userdev | `2.0.0-beta.22` |
+| Gradle wrapper | `9.4.1` |
 | Java | `25` |
-| Mod ID | `mapsyncer` |
-| 当前 Rebuild 制作 | `ShanHe_YF` |
-| 原始项目 | [RuoChennn/MapSyncer-for-XaeroWorldmap](https://github.com/RuoChennn/MapSyncer-for-XaeroWorldmap) |
+| Mod ID / plugin name | `mapsyncer` / `MapSyncer` |
+| Rebuild by | `ShanHe_YF` |
+| Original project | [RuoChennn/MapSyncer-for-XaeroWorldmap](https://github.com/RuoChennn/MapSyncer-for-XaeroWorldmap) |
 
-## 主要特性
+## Features
 
-- **服务端地图缓存同步**：服务端生成 Xaero 地图缓存后，客户端可按当前维度、全部维度或指定维度同步。
-- **固定写入 `mw$default`**：普通地图同步不再创建第二个 `mw$map`，减少玩家客户端里出现多个地图目录的情况。
-- **旧地图迁移**：如果客户端存在旧的 `mw$map` 或历史 `mw$*` 目录，会在后台把缺失的 `.zip` 区域迁移到 `mw$default`。
-- **半径同步**：玩家可以只同步自己周围指定半径内的地图，降低大地图服务器的首次同步压力。
-- **公共路标同步**：服务端可以下发公共路标，客户端按 Xaero `waypoints.txt` 格式合并写入。
-- **OP 管理 GUI**：OP 可以在 GUI 中查看状态、触发生成、管理同步参数，并从本地 Xaero 路标导入公共路标。
-- **增量缓存生成**：支持按 tick 间隔或每日定时执行增量扫描，也支持手动执行一次增量扫描。
-- **脏 region 追踪**：通过区块变更追踪减少无意义的全量扫描。
-- **自适应限速**：可根据玩家 Ping 自动降低或恢复同步速度。
-- **Voxy 同步支持**：在客户端和服务端都满足条件时，可同步当前维度的 Voxy 数据。
+- **Fabric and Paper servers**: one set of sync logic, running either as a Fabric server mod or as a Paper plugin.
+- **Server-side map cache syncing**: once the server has built its Xaero cache, clients can sync the current dimension, every dimension, or a named one.
+- **Writes to `mw$default`**: ordinary syncing no longer creates a second `mw$map`, so players do not end up with duplicate maps.
+- **Migration of old maps**: an existing `mw$map` or other historical `mw$*` directory has its missing `.zip` regions copied into `mw$default` in the background.
+- **Radius syncing**: players can sync only the map within a given radius, which keeps the first sync manageable on large servers.
+- **Public waypoints**: the server can push a shared waypoint group, merged into Xaero's `waypoints.txt`.
+- **Admin GUI**: ops can see server status, trigger generation, adjust sync settings, and import public waypoints from their own Xaero waypoints.
+- **Incremental generation**: rescans on a tick interval or once a day, and can be run on demand.
+- **Dirty-region tracking**: block changes narrow down what a rescan has to look at.
+- **Adaptive throttling**: sync speed backs off and recovers based on a player's ping.
+- **Voxy syncing**: where both client and server support it, the current dimension's Voxy data can be synced.
 
-## 安装要求
+## Requirements
 
-### 服务端
-
-服务端需要安装：
+### Server (Fabric)
 
 - Fabric Loader
 - Fabric API
-- MapSyncer Rebuild
+- MapSyncer Rebuild (`mapsyncer-rebuild-26.2-0.1.jar`)
 
-服务端不需要安装 Xaero's World Map。只有使用 Voxy 同步时，才需要按服务器实际需求准备 Voxy 相关环境。
+### Server (Paper)
 
-### 客户端
+- Paper `26.2` (or a fork such as Purpur)
+- The MapSyncer Rebuild plugin (`mapsyncer-rebuild-26.2-0.1-paper.jar`)
 
-客户端需要安装：
+The Paper build needs no Fabric Loader, no Fabric API, and no other plugins.
+
+Neither server needs Xaero's World Map installed. Only Voxy syncing calls for anything else, and what that needs depends on your setup.
+
+### Client
 
 - Fabric Loader
 - Fabric API
 - MapSyncer Rebuild
 - Xaero's World Map
 
-可选：
+Optional:
 
-- Voxy：仅在使用 Voxy 同步时需要。
-- Xaero 路标相关组件：仅在使用公共路标功能时需要，具体以玩家当前 Xaero 安装环境为准。
+- Voxy: only for Voxy syncing.
+- Xaero waypoint support: only for public waypoints, depending on the player's Xaero setup.
 
-## 快速开始
+## Getting started
 
-1. 将 `mapsyncer-rebuild-26.1.2-0.3.jar` 放入服务端 `mods/` 目录。
-2. 将同一个 jar 放入客户端 `mods/` 目录。
-3. 确保服务端和客户端都安装了匹配版本的 Fabric Loader 与 Fabric API。
-4. 启动服务端，让 MapSyncer 自动生成默认配置文件。
-5. OP 首次进服后建议执行：
+1. Install the server side, either way:
+   - Fabric server: put `mapsyncer-rebuild-26.2-0.1.jar` in `mods/`.
+   - Paper server: put `mapsyncer-rebuild-26.2-0.1-paper.jar` in `plugins/`.
+2. Put `mapsyncer-rebuild-26.2-0.1.jar` in the client's `mods/` directory. The client is always the Fabric mod.
+3. The client needs matching Fabric Loader and Fabric API versions, as does a Fabric server. A Paper server needs neither.
+4. Start the server once, so MapSyncer writes its default config.
+5. As an op, run this first — the console can run it too, without the leading `/`:
 
 ```text
 /mapsyncer generate
 ```
 
-6. 等服务端生成基础缓存后，玩家可执行：
+6. Once the server has built its cache, players can run:
 
 ```text
 /mapsyncer sync
 ```
 
-也可以打开 GUI：
+Or open the GUI:
 
 ```text
 /mapsyncer gui
 ```
 
-## 客户端 GUI
+## Paper servers
 
-客户端 GUI 可以通过以下命令打开：
+The Paper plugin runs the same scanning, conversion, caching, throttling and waypoint code as the Fabric server. Commands, config keys and the network protocol are identical, and the client needs no changes. Only the differences are listed here.
+
+### Config directory
+
+| Platform | Directory |
+| --- | --- |
+| Fabric | `config/` |
+| Paper | `plugins/MapSyncer/` |
+
+The file names are the same: `mapsyncer.json` and `mapsyncer-public-waypoints.json`.
+
+### Permissions
+
+The Fabric build uses vanilla permission levels, so admin commands need op level 4.
+
+The Paper build also accepts the permission node `mapsyncer.admin` (default `op`), which lets permission plugins such as LuckPerms grant access without opping. Either one is enough.
+
+### Payload size and splitting
+
+Fabric uses vanilla `custom_payload`, which allows 1MB per payload. Paper goes through Bukkit plugin messaging, which caps a message at 32766 bytes, so the plugin clamps `maxSyncPacketSize` to under 30000 bytes and splits regions into more parts.
+
+This changes nothing about the result and needs no configuration: a large `maxSyncPacketSize` is simply clamped, and throughput is still governed by `syncSpeedLimitKBps` and adaptive throttling.
+
+### Dirty-region tracking
+
+The Fabric build mixes into block updates and therefore sees every block change. Paper has no mixins, so the plugin listens to Bukkit events instead: placement, breaking, explosions, growth, pistons, buckets, newly generated chunks and so on.
+
+Treat this as an accelerator rather than the source of truth. Changes it misses — another plugin writing blocks directly, for instance — are still picked up by the incremental scan through `.mca` file timestamps, just not until the next scan. Keeping `dirtyRegionFallbackFullScan = true` (the default) is therefore recommended on Paper.
+
+### World directories
+
+The Paper build asks Bukkit for each world's own directory rather than guessing one from the dimension ID, so worlds created by plugins such as Multiverse are located correctly.
+
+### Handshake timing
+
+Bukkit's player-join event can fire before the client announces which channels it listens on. The plugin therefore does not handshake on join: it waits until the client registers the `mapsyncer:server_installed` channel before sending the "server has MapSyncer" notice and the public waypoints, so neither is lost. Players see no difference.
+
+### Console output
+
+Command replies use translation keys, such as `mapsyncer.generate.full_complete`, which the client localises. A server console has no language file for them and prints the key itself. The Fabric server behaves the same way.
+
+## Client GUI
+
+Open it with:
 
 ```text
 /mapsyncer gui
 /mapsyncergui
 ```
 
-GUI 会根据玩家身份显示不同页面：
+What the GUI shows depends on who opens it:
 
-| 身份 | 页面 |
+| Role | Pages |
 | --- | --- |
-| 普通玩家 | `Sync`、`Settings` |
-| OP | `Sync`、`Admin`、`Settings` |
+| Player | `Sync`, `Settings` |
+| Op | `Sync`, `Admin`, `Settings` |
 
-常见用途：
+Typical use:
 
-- 普通玩家可以同步当前维度、全部维度、指定半径地图，并调整客户端自动同步与 HUD 设置。
-- OP 可以查看服务端同步状态，触发缓存生成、强制刷新指定维度、执行增量扫描。
-- OP 可以扫描本地 Xaero 路标，并导入为服务端公共路标。
+- Players sync the current dimension, every dimension, or a radius, and adjust auto-sync and HUD settings.
+- Ops check server status, trigger generation, force-refresh a dimension, and run an incremental scan.
+- Ops scan their local Xaero waypoints and import them as public waypoints.
 
-## 命令说明
+## Commands
 
-### 玩家命令
+### Player commands
 
-| 命令 | 作用 |
+| Command | Effect |
 | --- | --- |
-| `/mapsyncer` | 显示帮助信息 |
-| `/mapsyncer help` | 显示帮助信息 |
-| `/mapsyncer gui` | 打开 MapSyncer GUI |
-| `/mapsyncergui` | 打开 MapSyncer GUI 的快捷命令 |
-| `/mapsyncer sync` | 同步当前维度 |
-| `/mapsyncer sync radius <blocks>` | 同步当前维度指定半径内的地图 |
-| `/mapsyncer sync all` | 同步所有已生成缓存的维度 |
-| `/mapsyncer sync <dimension>` | 同步指定维度 |
+| `/mapsyncer` | Show help |
+| `/mapsyncer help` | Show help |
+| `/mapsyncer gui` | Open the MapSyncer GUI |
+| `/mapsyncergui` | Shorthand for opening the GUI |
+| `/mapsyncer sync` | Sync the current dimension |
+| `/mapsyncer sync radius <blocks>` | Sync the current dimension within a radius |
+| `/mapsyncer sync all` | Sync every dimension that has a cache |
+| `/mapsyncer sync <dimension>` | Sync one dimension |
 
-示例：
+Examples:
 
 ```text
 /mapsyncer sync
@@ -163,7 +223,7 @@ GUI 会根据玩家身份显示不同页面：
 /mapsyncer sync minecraft:the_nether
 ```
 
-`<dimension>` 支持短名称和完整维度 ID：
+`<dimension>` accepts both short names and full dimension IDs:
 
 - `overworld`
 - `the_nether`
@@ -171,28 +231,28 @@ GUI 会根据玩家身份显示不同页面：
 - `minecraft:overworld`
 - `minecraft:the_nether`
 - `minecraft:the_end`
-- 其他模组注册的完整维度 ID
+- the full ID of any modded dimension
 
-### OP / 服务端管理命令
+### Op and server commands
 
-| 命令 | 作用 |
+| Command | Effect |
 | --- | --- |
-| `/mapsyncer` / `/mapsyncer help` | 显示 OP 管理命令帮助 |
-| `/mapsyncer gui` | 让当前 OP 玩家打开管理 GUI，控制台不能使用 GUI |
-| `/mapsyncer generate` | 后台生成所有维度的 Xaero 地图缓存 |
-| `/mapsyncer generate <dimension>` | 后台生成指定维度缓存 |
-| `/mapsyncer generate <dimension> force` | 清理并强制重新生成指定维度缓存 |
-| `/mapsyncer generate <dimension> <x> <z>` | 只生成指定 MCA region |
-| `/mapsyncer status` | 查看生成进度、增量模式和缓存统计 |
-| `/mapsyncer incremental run` | 立即执行一次增量扫描 |
-| `/mapsyncer incremental off` | 关闭自动增量更新 |
-| `/mapsyncer incremental tick` | 按当前配置的 tick 间隔启用增量更新 |
-| `/mapsyncer incremental tick <interval>` | 设置并启用按 tick 间隔执行的增量更新 |
-| `/mapsyncer incremental scheduled` | 使用当前配置时间启用每日定时增量更新 |
-| `/mapsyncer incremental scheduled <hour>` | 设置每日指定小时执行，分钟默认为 `0` |
-| `/mapsyncer incremental scheduled <hour> <minute>` | 设置每日指定时间执行 |
+| `/mapsyncer` / `/mapsyncer help` | Show the admin help |
+| `/mapsyncer gui` | Open the admin GUI; the console cannot use it |
+| `/mapsyncer generate` | Build the map cache for every dimension, in the background |
+| `/mapsyncer generate <dimension>` | Build the cache for one dimension |
+| `/mapsyncer generate <dimension> force` | Clear and rebuild one dimension's cache |
+| `/mapsyncer generate <dimension> <x> <z>` | Build one MCA region |
+| `/mapsyncer status` | Show generation progress, incremental mode and cache statistics |
+| `/mapsyncer incremental run` | Run one incremental scan now |
+| `/mapsyncer incremental off` | Turn incremental updates off |
+| `/mapsyncer incremental tick` | Enable tick-interval updates at the configured interval |
+| `/mapsyncer incremental tick <interval>` | Set the interval and enable tick-interval updates |
+| `/mapsyncer incremental scheduled` | Enable daily updates at the configured time |
+| `/mapsyncer incremental scheduled <hour>` | Run daily at that hour, on the hour |
+| `/mapsyncer incremental scheduled <hour> <minute>` | Run daily at that time |
 
-示例：
+Examples:
 
 ```text
 /mapsyncer generate
@@ -205,54 +265,55 @@ GUI 会根据玩家身份显示不同页面：
 /mapsyncer incremental scheduled 4 30
 ```
 
-OP 管理命令需要 `LEVEL_OWNERS` 权限。建议首次开服后先执行 `/mapsyncer generate` 生成基础缓存，再让玩家通过 GUI 或 `/mapsyncer sync` 同步。
+Admin commands need vanilla permission level 4 (`LEVEL_OWNERS`), or the `mapsyncer.admin` node on Paper. Run `/mapsyncer generate` once after first starting the server, then let players sync through the GUI or `/mapsyncer sync`.
 
-## 配置文件
+## Configuration
 
-MapSyncer Rebuild 会在 `config/` 目录生成配置文件。修改配置后，建议重启服务端或使用对应 GUI/命令保存配置。
+MapSyncer Rebuild writes its config into the platform's config directory: `config/` on Fabric, `plugins/MapSyncer/` on Paper. After editing a file by hand, restart the server, or save the equivalent setting through the GUI or a command.
 
-### 服务端配置
+### Server config
 
-路径：
+Path:
 
 ```text
-config/mapsyncer.json
+config/mapsyncer.json                (Fabric)
+plugins/MapSyncer/mapsyncer.json     (Paper)
 ```
 
-| 配置项 | 说明 |
+| Key | Meaning |
 | --- | --- |
-| `enableDebugLogging` | 是否启用调试日志 |
-| `maxConcurrentRegions` | 服务端并发处理 region 的数量 |
-| `maxSyncPacketSize` | 地图同步分包大小 |
-| `syncSpeedLimitKBps` | 每个玩家的固定最高同步速度 |
-| `enableAdaptiveSyncThrottle` | 是否启用基于玩家 Ping 的自适应限速 |
-| `adaptivePingThresholdMs` | 触发限速的 Ping 阈值 |
-| `adaptivePingRecoverMs` | 恢复速度的 Ping 阈值 |
-| `adaptiveThrottleAdjustCooldownMs` | 自适应调速冷却时间，默认 `2000ms` |
-| `adaptiveMinSyncSpeedKBps` | 自适应限速的最低速度 |
-| `adaptiveIncreaseStepKBps` | 网络稳定时每次恢复速度的步进 |
-| `adaptiveDecreaseFactor` | 网络不稳定时速度下降比例 |
-| `adaptiveStableRecoverSamples` | 恢复速度前需要的稳定样本数量 |
-| `adaptiveUnlimitedCeilingKBps` | 不限速时的自适应速度上限 |
-| `enableVoxySync` | 是否允许 Voxy 同步 |
-| `incrementalUpdateMode` | 增量更新模式，可为 `DISABLED`、`TICK`、`SCHEDULED` |
-| `incrementalUpdateIntervalTicks` | tick 模式的执行间隔 |
-| `scheduledUpdateHour` | 定时模式的执行小时 |
-| `scheduledUpdateMinute` | 定时模式的执行分钟 |
-| `enableDirtyRegionTracking` | 是否启用脏 region 精确增量 |
-| `dirtyRegionFallbackFullScan` | 脏 region 为空时是否回退到全量扫描 |
-| `maxDirtyRegionsPerIncrementalRun` | 单次增量运行最多处理的脏 region 数量 |
-| `incrementalForceSaveBeforeScan` | 增量扫描前是否强制保存区块 |
-| `enableRadiusSync` | 是否允许半径同步 |
-| `maxRadiusSyncBlocks` | 玩家可请求的最大同步半径 |
-| `radiusSyncCenterMode` | 半径同步中心模式，可为 `PLAYER_POSITION`、`WORLD_SPAWN`、`FIXED` |
-| `radiusSyncFixedDimension` | 固定中心点所在维度 |
-| `radiusSyncFixedX` / `radiusSyncFixedY` / `radiusSyncFixedZ` | 固定中心点坐标 |
-| `defaultScanMode` | 默认扫描模式 |
-| `defaultCaveStart` | 默认洞穴起始高度 |
-| `dimensionConfigs` | 维度扫描配置列表 |
+| `enableDebugLogging` | Enable debug logging |
+| `maxConcurrentRegions` | How many regions the server converts at once |
+| `maxSyncPacketSize` | Payload size used when splitting map data |
+| `syncSpeedLimitKBps` | Fixed per-player speed limit |
+| `enableAdaptiveSyncThrottle` | Adjust the speed limit from player ping |
+| `adaptivePingThresholdMs` | Ping at which the speed backs off |
+| `adaptivePingRecoverMs` | Ping at which the speed recovers |
+| `adaptiveThrottleAdjustCooldownMs` | Cooldown between adjustments, default `2000ms` |
+| `adaptiveMinSyncSpeedKBps` | Floor for the adaptive speed |
+| `adaptiveIncreaseStepKBps` | How much the speed recovers per step on a stable connection |
+| `adaptiveDecreaseFactor` | How sharply the speed drops on an unstable one |
+| `adaptiveStableRecoverSamples` | Stable samples needed before the speed recovers |
+| `adaptiveUnlimitedCeilingKBps` | Ceiling for the adaptive speed when no fixed limit is set |
+| `enableVoxySync` | Allow Voxy syncing |
+| `incrementalUpdateMode` | `DISABLED`, `TICK` or `SCHEDULED` |
+| `incrementalUpdateIntervalTicks` | Interval for `TICK` mode |
+| `scheduledUpdateHour` | Hour for `SCHEDULED` mode |
+| `scheduledUpdateMinute` | Minute for `SCHEDULED` mode |
+| `enableDirtyRegionTracking` | Narrow incremental scans to regions known to have changed |
+| `dirtyRegionFallbackFullScan` | Fall back to a full scan when no regions are marked dirty |
+| `maxDirtyRegionsPerIncrementalRun` | Dirty regions handled per incremental run |
+| `incrementalForceSaveBeforeScan` | Force a chunk save before scanning |
+| `enableRadiusSync` | Allow radius syncing |
+| `maxRadiusSyncBlocks` | Largest radius a player may ask for |
+| `radiusSyncCenterMode` | `PLAYER_POSITION`, `WORLD_SPAWN` or `FIXED` |
+| `radiusSyncFixedDimension` | Dimension of the fixed centre |
+| `radiusSyncFixedX` / `radiusSyncFixedY` / `radiusSyncFixedZ` | Coordinates of the fixed centre |
+| `defaultScanMode` | Default scan mode |
+| `defaultCaveStart` | Default cave start height |
+| `dimensionConfigs` | Per-dimension scan settings |
 
-默认维度配置示例：
+The default dimension settings:
 
 ```text
 minecraft:overworld|SURFACE|63|true|false|-64|384|384
@@ -260,170 +321,155 @@ minecraft:the_nether|CAVE|63|false|true|0|256|256
 minecraft:the_end|SURFACE|63|false|false|0|256|256
 ```
 
-### 客户端配置
+### Client config
 
-路径：
+Path:
 
 ```text
 config/mapsyncer-client.json
 ```
 
-| 配置项 | 说明 |
+| Key | Meaning |
 | --- | --- |
-| `autoSyncOnJoin` | 进服后是否自动同步 |
-| `showSyncHud` | 是否显示同步 HUD |
-| `syncProgressChatIntervalPercent` | 聊天栏进度提示间隔百分比，`0` 表示不按百分比提示 |
-| `autoSyncDelaySeconds` | 自动同步延迟秒数 |
+| `autoSyncOnJoin` | Sync automatically after joining |
+| `showSyncHud` | Show the sync HUD |
+| `syncProgressChatIntervalPercent` | Percentage step between chat progress messages; `0` disables them |
+| `autoSyncDelaySeconds` | Delay before an automatic sync starts |
 
-### 公共路标配置
+### Public waypoint config
 
-路径：
+Path:
 
 ```text
-config/mapsyncer-public-waypoints.json
+config/mapsyncer-public-waypoints.json                (Fabric)
+plugins/MapSyncer/mapsyncer-public-waypoints.json     (Paper)
 ```
 
-主要字段：
-
-| 配置项 | 说明 |
+| Key | Meaning |
 | --- | --- |
-| `enabled` | 是否启用公共路标同步 |
-| `groupName` | 写入 Xaero 的公共路标组名，默认 `ServerPublic` |
-| `replaceGroup` | 是否替换同名公共组 |
-| `waypoints` | 公共路标列表 |
+| `enabled` | Enable public waypoint syncing |
+| `groupName` | The Xaero group public waypoints go into, default `ServerPublic` |
+| `replaceGroup` | Replace an existing group of that name |
+| `waypoints` | The public waypoints themselves |
 
-## 公共路标同步
+## Public waypoints
 
-公共路标会按 Xaero 的 `waypoints.txt` 文本格式写入：
+Public waypoints are written in Xaero's `waypoints.txt` format:
 
 ```text
 waypoint:name:initial:x:y:z:color:disabled:type:set:dimension
 ```
 
-MapSyncer Rebuild 只管理公共组，默认组名为 `ServerPublic`。写入时会读取现有 `waypoints.txt`，删除公共组旧行，再追加新的公共路标。
+MapSyncer Rebuild only manages the public group, `ServerPublic` by default. It reads the existing `waypoints.txt`, removes the old lines of that group, and appends the current public waypoints.
 
-不会被覆盖的内容：
+It never touches:
 
-- 玩家私人路标。
-- 其他路标组。
-- 与公共组无关的 Xaero 配置。
+- a player's private waypoints
+- any other waypoint group
+- anything else in the Xaero config
 
-如果路标文件被 Xaero 占用，客户端会放弃本次写入并提示稍后手动同步。
+If the waypoint file is locked by Xaero, the client skips the write and says to sync again later.
 
-OP 可以从自己的 Xaero 本地路标导入公共路标：
+An op can promote their own Xaero waypoints to public ones:
 
-1. 在 Xaero 中正常创建一个私人路标。
-2. 打开 `/mapsyncer gui`。
-3. 进入 `Admin` 页面。
-4. 扫描本地路标。
-5. 在列表中选择要导入的路标。
-6. 保存后，该路标会写入服务端 `config/mapsyncer-public-waypoints.json`。
+1. Create a private waypoint in Xaero as usual.
+2. Open `/mapsyncer gui`.
+3. Go to the `Admin` page.
+4. Scan local waypoints.
+5. Pick the ones to import.
+6. Save; they are written to the server's `mapsyncer-public-waypoints.json`.
 
-导入不会修改本地私人 `waypoints.txt`。服务端会校验 OP 权限，并按“同维度同名或同维度同坐标则更新，否则追加”的规则保存。
+Importing does not modify the local private `waypoints.txt`. The server checks op permission and applies the rule "same dimension and same name, or same dimension and same coordinates, updates; otherwise appends".
 
-## Xaero 默认地图与迁移
+## The default Xaero map and migration
 
-MapSyncer Rebuild 的普通地图同步固定写入：
+Ordinary map syncing always writes into:
 
 ```text
 mw$default
 ```
 
-这样可以避免客户端出现多个重复地图，例如旧版常见的 `mw$map`。
+which is what stops players ending up with duplicate maps, such as the `mw$map` older versions produced.
 
-如果客户端已经存在旧的 `mw$map` 或其他历史 `mw$*` 目录，MapSyncer Rebuild 会在后台迁移：
+Where a client already has an `mw$map` or another historical `mw$*` directory, MapSyncer Rebuild migrates it in the background:
 
-- 只复制缺失的 `.zip` 地图区域。
-- 保留 `caves/<layer>` 结构。
-- 忽略 `.part`、`.temp` 和非 `.zip` 文件。
-- 不删除旧目录。
-- 不修改 `waypoints.txt`。
+- copies only the `.zip` regions that are missing
+- keeps the `caves/<layer>` structure
+- ignores `.part`, `.temp` and anything that is not a `.zip`
+- never deletes the old directory
+- never touches `waypoints.txt`
 
-迁移完成后会自动触发 Xaero 地图批量重载，玩家通常不需要重新进入游戏。
+When the migration finishes it triggers an Xaero map reload, so players usually do not have to rejoin.
 
-## Voxy 同步
+## Voxy syncing
 
-Voxy 同步是可选功能。GUI 会自动检测客户端是否安装并启用了 Voxy。只有客户端和服务端都支持时，Voxy 同步按钮才可用。
+Voxy syncing is optional. The GUI detects whether the client has Voxy installed and enabled, and the Voxy button only works when both sides support it.
 
-注意事项：
+Worth knowing:
 
-- Voxy 同步只处理当前维度。
-- 使用服务端最近一次落盘的存档数据。
-- 不会清理 NBT。
-- 刚放置的方块可能要等服务端保存后才会出现在 Voxy 中。
-- 如果服务端未启用 Voxy 同步，普通 Xaero 地图同步仍然可以正常使用。
+- Voxy syncing only covers the current dimension.
+- It uses the server's last saved data.
+- The NBT is not cleaned up in any way.
+- Blocks placed just now may not appear until the server next saves.
+- With Voxy syncing off on the server, ordinary Xaero map syncing still works normally.
 
-## 性能与同步策略
+## Performance and sync strategy
 
-### 普通地图同步
+### Ordinary map syncing
 
-普通地图同步会写入 `mw$default`，并根据服务端生成的缓存向客户端分包传输。服务端可通过 `syncSpeedLimitKBps` 限制单个玩家的同步速度。
+Ordinary syncing writes into `mw$default`, sending the server's generated cache in parts. `syncSpeedLimitKBps` caps the rate per player.
 
-### 自适应限速
+### Adaptive throttling
 
-启用 `enableAdaptiveSyncThrottle` 后，服务端会根据玩家 Ping 调整同步速度。网络变差时降低速度，网络恢复稳定后逐步提高速度。
+With `enableAdaptiveSyncThrottle` on, the server adjusts each player's sync speed from their ping: slower when the connection degrades, recovering gradually once it steadies.
 
-### 增量生成
+### Incremental generation
 
-增量生成支持三种模式：
-
-| 模式 | 说明 |
+| Mode | Meaning |
 | --- | --- |
-| `DISABLED` | 不自动执行增量更新 |
-| `TICK` | 按 tick 间隔执行 |
-| `SCHEDULED` | 每天在指定时间执行 |
+| `DISABLED` | No automatic updates |
+| `TICK` | Run every N ticks |
+| `SCHEDULED` | Run once a day at a set time |
 
-### 脏 region 追踪
+### Dirty-region tracking
 
-启用 `enableDirtyRegionTracking` 后，服务端会记录发生变化的 region，并在增量更新时优先处理这些区域，减少大地图服务器的扫描压力。
+With `enableDirtyRegionTracking` on, the server notes which regions changed and handles those first on an incremental update, which keeps rescans cheap on large maps.
 
-## 版本命名规则
+## Version numbering
 
-从 `mapsyncer-rebuild-26.1.2-0.1` 开始，MapSyncer Rebuild 的 mod 版本和发布文件名统一使用以下格式：
+From `mapsyncer-rebuild-26.1.2-0.1` onwards, versions and release file names follow:
 
 ```text
-mapsyncer-rebuild-<游戏版本号>-<发布序号>
+mapsyncer-rebuild-<game version>-<release number>
 ```
 
-字段说明：
-
-| 字段 | 含义 |
+| Field | Meaning |
 | --- | --- |
-| `mapsyncer-rebuild` | mod 名称 |
-| `<游戏版本号>` | 当前适配的 Minecraft/Fabric 游戏版本 |
-| `<发布序号>` | 当前游戏版本下的发布序号，从 `0.1` 开始 |
+| `mapsyncer-rebuild` | The mod name |
+| `<game version>` | The Minecraft version it targets |
+| `<release number>` | The release within that game version, starting at `0.1` |
 
-当前版本：
+Current version:
 
 ```text
-mapsyncer-rebuild-26.1.2-0.3
+mapsyncer-rebuild-26.2-0.1
 ```
 
-后续命名示例：
+## Licence
 
-| 场景 | 示例 |
-| --- | --- |
-| 同一游戏版本的第二版 | `mapsyncer-rebuild-26.1.2-0.2` |
-| 同一游戏版本的第三版 | `mapsyncer-rebuild-26.1.2-0.3` |
-| 升级到新游戏版本后的第一版 | `mapsyncer-rebuild-<新游戏版本号>-0.1` |
-
-以后发布版本请按这个规则命名。
-
-## 许可证
-
-本项目当前 Rebuild 版本由 **ShanHe_YF** 以 **GNU General Public License v3.0 only** 发布，SPDX 标识为：
+This Rebuild is released by **ShanHe_YF** under the **GNU General Public License v3.0 only**, SPDX identifier:
 
 ```text
 GPL-3.0-only
 ```
 
-完整协议正文见仓库根目录的 [LICENSE](LICENSE)。项目归属和改写说明见 [NOTICE](NOTICE)。
+The full text is in [LICENSE](LICENSE); attribution and the record of what was rewritten are in [NOTICE](NOTICE).
 
-这意味着你在分发、修改或再发布本项目时，需要遵守 GPLv3 的条款，包括保留版权声明、保留许可证文本，并在分发修改版本时按 GPLv3 要求提供对应源代码。
+Distributing, modifying or redistributing this project means following GPLv3: keeping the copyright notices, keeping the licence text, and providing the corresponding source when you distribute a modified version.
 
-## 构建项目
+## Building
 
-本项目需要 Java 25。Windows 下可以显式指定 Java 25 后构建：
+Java 25 is required. On Windows, point at Java 25 explicitly:
 
 ```powershell
 $env:JAVA_HOME='C:\Program Files\Zulu\zulu-25'
@@ -431,53 +477,93 @@ $env:Path="$env:JAVA_HOME\bin;$env:Path"
 .\gradlew.bat clean build --stacktrace
 ```
 
-构建产物位于：
+On Linux or macOS:
 
-```text
-build/libs/
+```bash
+./gradlew clean build
 ```
 
-当前规则下的主要产物：
+That builds both sides. The artifacts are:
 
 ```text
-build/libs/mapsyncer-rebuild-26.1.2-0.3.jar
-build/libs/mapsyncer-rebuild-26.1.2-0.3-sources.jar
+build/libs/mapsyncer-rebuild-26.2-0.1.jar               # Fabric mod: client, and Fabric servers
+build/libs/mapsyncer-rebuild-26.2-0.1-sources.jar
+paper/build/libs/mapsyncer-rebuild-26.2-0.1-paper.jar   # Paper plugin
 ```
 
-## 常见问题
+To build only one side:
 
-### 为什么客户端里会看到两个地图？
+```bash
+./gradlew :build         # the Fabric mod
+./gradlew :paper:build   # the Paper plugin
+```
 
-旧客户端可能保留了 `mw$map`。MapSyncer Rebuild 会把普通同步固定写入 `mw$default`，并在后台把旧数据合并进去。迁移完成后，玩家主要使用默认地图即可。
+The Paper build downloads a Paper development bundle the first time it runs, which takes a few minutes.
 
-### 公共路标会覆盖我的私人路标吗？
+### Continuous integration and releases
 
-不会。MapSyncer Rebuild 只替换公共组，私人路标和其他组不会被修改。
+Two GitHub Actions workflows live in `.github/workflows/`:
 
-### 没装 Xaero 路标组件还能同步地图吗？
+| Workflow | Runs on | What it does |
+| --- | --- | --- |
+| `build.yml` | Pushes to `main`, pull requests, manual runs | Builds both jars and attaches them to the run as artifacts, kept for 14 days |
+| `release.yml` | Pushing a `v*` tag, or a manual run | Builds both jars and publishes a GitHub release with them |
 
-可以。公共路标相关功能会跳过或不可用，但普通地图同步不受影响。
+To cut a release, tag a commit and push the tag:
 
-### 服务端没启用 Voxy 会怎样？
+```bash
+git tag v0.4
+git push origin v0.4
+```
 
-Voxy 同步按钮会保持不可用，普通 Xaero 地图同步仍然正常。
+The release then carries three assets plus a `checksums.txt` of their SHA-256 sums:
 
-### 同步刚结束后地图没有立刻刷新怎么办？
+```text
+mapsyncer-rebuild-26.2-0.1.jar          # clients, and Fabric servers
+mapsyncer-rebuild-26.2-0.1-paper.jar    # Paper servers
+mapsyncer-rebuild-26.2-0.1-sources.jar  # sources
+```
 
-通常等待自动批量重载即可。如果仍然没有显示，可以重新打开 Xaero 地图，或者重新进入服务器。
+The release notes name the version from `gradle.properties` and say which file goes where, with GitHub's generated changelog appended. The build fails rather than publishing if either jar is missing.
 
-### 首次开服应该先做什么？
+Releases can also be started from the Actions tab: run **Release**, give it a tag name, and tick *draft* to review it before it goes public. A tag that does not exist yet is created at the commit the run started from.
 
-建议 OP 先执行：
+Both workflows build on Java 25 (Temurin) and cache `~/.gradle`, which covers the Minecraft jars Loom downloads and the Paper development bundle. Expect the first run to be slow and later ones to be much quicker.
+
+## FAQ
+
+### Why do I see two maps in my client?
+
+An older client may still have `mw$map`. MapSyncer Rebuild writes ordinary syncs into `mw$default` and merges the old data in the background. Once that finishes, the default map is the one to use.
+
+### Will public waypoints overwrite my private ones?
+
+No. MapSyncer Rebuild only replaces the public group; private waypoints and other groups are left alone.
+
+### Can I sync maps without Xaero's waypoint support?
+
+Yes. The public waypoint features are skipped or unavailable, but ordinary map syncing is unaffected.
+
+### What happens if the server has Voxy syncing off?
+
+The Voxy button stays disabled and ordinary Xaero map syncing carries on as normal.
+
+### The map did not refresh right after syncing.
+
+Usually the automatic reload catches up shortly. If nothing appears, reopen the Xaero map, or rejoin the server.
+
+### What should I do first on a new server?
+
+Have an op run:
 
 ```text
 /mapsyncer generate
 ```
 
-生成基础缓存后，再让玩家使用 GUI 或 `/mapsyncer sync` 同步地图。
+Once the base cache exists, players can sync through the GUI or `/mapsyncer sync`.
 
-## 致谢
+## Credits
 
-- 原始项目：[RuoChennn/MapSyncer-for-XaeroWorldmap](https://github.com/RuoChennn/MapSyncer-for-XaeroWorldmap)
-- Rebuild 版本制作与整理：**ShanHe_YF**
-- 感谢 Fabric、Xaero World Map、Voxy 及相关社区项目。
+- Original project: [RuoChennn/MapSyncer-for-XaeroWorldmap](https://github.com/RuoChennn/MapSyncer-for-XaeroWorldmap)
+- Rebuild by **ShanHe_YF**
+- Thanks to Fabric, Paper, Xaero's World Map, Voxy and the surrounding community projects.

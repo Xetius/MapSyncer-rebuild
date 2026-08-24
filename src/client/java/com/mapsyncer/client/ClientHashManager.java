@@ -19,55 +19,55 @@ import java.util.concurrent.ForkJoinPool;
 import java.util.stream.Stream;
 
 /**
- * 客户端哈希管理器。
- * 用于计算和管理客户端区域文件的哈希值和时间戳信息，
- * 以便与服务端的生成缓存进行比较，决定同步策略。
+ * Works out what map data the client already has.
+ * Hashes the client's region files and pairs each with a timestamp, so the server can
+ * compare them against its own cache and send only what differs.
  *
- * <p>主要功能：</p>
+ * <p>What it does:</p>
  * <ul>
- *   <li>扫描客户端地图目录，计算所有区域文件的CRC32哈希</li>
- *   <li>使用缓存的时间戳避免文件修改时间变化导致的误同步</li>
- *   <li>使用共享 ForkJoinPool 提高大量区域文件的哈希计算效率</li>
+ *   <li>walks the client's map directory, taking the CRC32 of every region file</li>
+ *   <li>uses cached timestamps, so a rewritten file is not mistaken for changed data</li>
+ *   <li>hashes in parallel on a shared ForkJoinPool, since there can be a lot of files</li>
  * </ul>
  *
- * <p>同步逻辑：</p>
+ * <p>What the server does with it:</p>
  * <ul>
- *   <li>哈希匹配 → 跳过同步（文件内容相同）</li>
- *   <li>哈希不匹配 + 客户端时间戳较旧 → 同步</li>
+ *   <li>hashes match: skip, the client already has this exact data</li>
+ *   <li>hashes differ and the client's timestamp is older: send it</li>
  * </ul>
  */
 public class ClientHashManager {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ClientHashManager.class);
 
-    /** 共享的 ForkJoinPool，限制 2 个线程避免阻塞游戏 */
+    /** Shared ForkJoinPool, capped at 2 threads so hashing does not stutter the game. */
     private static final ForkJoinPool SHARED_POOL = new ForkJoinPool(2);
 
     /**
-     * 客户端元数据记录：时间戳(秒) + CRC32哈希。
+     * One region's metadata: a timestamp in seconds plus the CRC32 hash.
      *
-     * @param timestampSeconds 区域文件的时间戳（秒）
-     * @param hash 区域文件的CRC32哈希值（8位十六进制）
+     * @param timestampSeconds the region file's timestamp, in seconds
+     * @param hash the region file's CRC32, as eight hex characters
      */
     /**
-     * 收集所有区域的修改时间戳和哈希值。
-     * 用于与服务端的生成缓存进行比较。
+     * Collects the timestamp and hash of every region the client has.
+     * This is what the server compares against its own cache.
      *
-     * <p>同步逻辑：</p>
+     * <p>What the server does with it:</p>
      * <ul>
-     *   <li>哈希匹配 → 跳过同步（文件内容相同）</li>
-     *   <li>哈希不匹配 + 客户端时间戳较旧 → 同步</li>
+     *   <li>hashes match: skip, the client already has this exact data</li>
+     *   <li>hashes differ and the client's timestamp is older: send it</li>
      * </ul>
      *
-     * <p>使用上次同步时缓存的（存储在 sync_timestamps.cache 中）
-     * 时间戳，避免文件写入后修改时间变化导致的问题。</p>
+     * <p>Timestamps come from the last sync, out of sync_timestamps.cache, so that writing
+     * a file does not make it look newer than it is.</p>
      *
-     * <p>使用并行处理（限制2个线程）避免在计算大量区域哈希时阻塞游戏。</p>
+     * <p>Hashing runs in parallel on 2 threads, so a large map does not stutter the game.</p>
      *
-     * @param mapDir 要扫描的目录：
-     *               - 单维度同步时使用 mw$worldId 目录
-     *               - 全维度同步时使用 Multiplayer_<server> 目录
-     * @return 相对路径到 ClientMeta（时间戳秒 + 哈希）的映射
+     * @param mapDir the directory to walk:
+     *               - the mw$worldId directory when syncing one dimension
+     *               - the Multiplayer_<server> directory when syncing all of them
+     * @return relative path to its ClientMeta, i.e. timestamp and hash
      */
     public static Map<String, ClientMeta> computeMetaForSync(Path mapDir) {
         Map<String, ClientMeta> metaMap = new ConcurrentHashMap<>();
@@ -102,7 +102,7 @@ public class ClientHashManager {
 
         LOGGER.info("Computing hashes for {} region files in {} (parallel=2)", zipFiles.size(), mapDir);
 
-        // 使用共享的 ForkJoinPool（限制2个线程）避免阻塞游戏和重复创建开销
+        // The shared 2-thread pool, so hashing neither stutters the game nor rebuilds a pool.
         try {
             SHARED_POOL.submit(() ->
                     zipFiles.parallelStream()
@@ -152,11 +152,11 @@ public class ClientHashManager {
     }
 
     /**
-     * 从给定路径查找服务器目录（Multiplayer_<server>）。
-     * 适用于基础目录和 mw$worldId 目录两种情况。
+     * Finds the server directory (Multiplayer_<server>) from a path.
+     * Works whether given the base directory or an mw$worldId directory.
      *
-     * @param mapDir 起始目录路径
-     * @return 服务器目录路径，如果未找到返回 null
+     * @param mapDir the directory to start from
+     * @return the server directory, or {@code null} if there is none
      */
     private static Path findServerDir(Path mapDir) {
         Path current = mapDir;
@@ -174,10 +174,10 @@ public class ClientHashManager {
     }
 
     /**
-     * 获取文件修改时间（毫秒）。
+     * A file's modification time, in milliseconds.
      *
-     * @param path 文件路径
-     * @return 修改时间（毫秒），如果获取失败返回 0
+     * @param path the file
+     * @return the time in milliseconds, or 0 if it cannot be read
      */
     private static long getFileModificationTime(Path path) {
         try {
@@ -191,10 +191,10 @@ public class ClientHashManager {
     }
 
     /**
-     * 计算文件内容的 CRC32 哈希值（使用 HashUtils）。
+     * The CRC32 of a file's contents, via HashUtils.
      *
-     * @param filePath 文件路径
-     * @return CRC32 哈希值（8位十六进制字符串）
+     * @param filePath the file
+     * @return the CRC32, as eight hex characters
      */
     private static String computeFileHash(Path filePath) {
         return HashUtils.computeFileHash(filePath);
@@ -212,27 +212,26 @@ public class ClientHashManager {
     }
 
     /**
-     * 构建服务器格式的相对路径。
-     * 将 Xaero 的维度名称转换为 Minecraft 维度名称。
-     * 移除 mw$worldId 目录层级。
+     * Builds the path in the form the server uses.
+     * Converts Xaero's dimension name to Minecraft's and drops the mw$worldId level.
      *
-     * <p>支持 caves/<layer> 目录结构：</p>
+     * <p>Handles the caves/<layer> layout:</p>
      * <ul>
-     *   <li>地表：xaero_dim/regionX_regionZ</li>
-     *   <li>洞穴：xaero_dim/caves/layer/regionX_regionZ</li>
+     *   <li>surface: xaero_dim/regionX_regionZ</li>
+     *   <li>caves: xaero_dim/caves/layer/regionX_regionZ</li>
      * </ul>
      *
-     * <p>重要修复：确保 xaeroDim 使用正确的 Xaero 格式（namespace$path）：</p>
+     * <p>The dimension name has to be in Xaero's namespace$path form:</p>
      * <ul>
-     *   <li>如果目录名包含 $，说明已经是正确格式</li>
-     *   <li>如果不包含，尝试从缓存反向查找正确格式</li>
-     *   <li>使用 DimensionPathMapping 进行转换</li>
+     *   <li>a name containing $ is already correct</li>
+     *   <li>otherwise the correct form is looked up in the cache</li>
+     *   <li>failing that, DimensionPathMapping converts it</li>
      * </ul>
      *
-     * @param zipPath zip 文件路径
-     * @param serverDir Multiplayer_<server> 目录
-     * @return 服务器格式的相对路径（不含 .zip 扩展名）
-     *         格式匹配服务端 GenerationCache：dim/regionX_regionZ 或 dim/caves/layer/regionX_regionZ
+     * @param zipPath the zip file
+     * @param serverDir the Multiplayer_<server> directory
+     * @return the path in the server's form, without the .zip extension,
+     *         matching GenerationCache: dim/regionX_regionZ or dim/caves/layer/regionX_regionZ
      */
     private static String buildRelativePath(Path zipPath, Path serverDir) {
         // Get relative path from server directory
@@ -245,21 +244,21 @@ public class ClientHashManager {
         }
 
         // Parse path components
-        // 客户端路径格式：
-        // 地表：dimension/mw$worldId/regionX_regionZ (3 parts)
-        // 洞穴：dimension/mw$worldId/caves/layer/regionX_regionZ (5 parts)
+        // Client paths look like:
+        // surface: dimension/mw$worldId/regionX_regionZ (3 parts)
+        // caves:   dimension/mw$worldId/caves/layer/regionX_regionZ (5 parts)
         String[] parts = relative.split("/");
         if (parts.length < 3) {
             LOGGER.warn("Unexpected path format: {}", relative);
             return relative;
         }
 
-        String dirName = parts[0];  // 目录名（可能是正确的 Xaero 格式，也可能是错误的）
+        String dirName = parts[0];  // the directory name, which may or may not be in Xaero's form
         String regionCoords = parts[parts.length - 1];  // Last part is regionX_regionZ
 
-        // 检查是否有 caves 层
-        // 客户端洞穴路径：dimension/mw$worldId/caves/layer/regionX_regionZ
-        // caves 在 parts[2]（因为 mw$worldId 在 parts[1]）
+        // Is there a caves level?
+        // Client cave paths are dimension/mw$worldId/caves/layer/regionX_regionZ,
+        // so caves sits at parts[2], after mw$worldId at parts[1].
         int caveLayer = Integer.MAX_VALUE;
         boolean hasCaves = false;
         for (int i = 1; i < parts.length - 2; i++) {
@@ -279,20 +278,19 @@ public class ClientHashManager {
             LOGGER.debug("Path has caves layer: {}", relative);
         }
 
-        // 关键修复：确保 xaeroDim 使用正确的 Xaero 格式
-        // 目录名可能是：
-        // 1. 正确的 Xaero 格式：twilightforest$twilight_forest（包含 $）
-        // 2. 原版维度：null, DIM-1, DIM1
-        // 3. 错误的格式：twilight_forest（缺少 namespace）
+        // The dimension name has to be in Xaero's form. The directory name may be:
+        // 1. correct already: twilightforest$twilight_forest, containing $
+        // 2. a vanilla dimension: null, DIM-1, DIM1
+        // 3. wrong: twilight_forest, missing its namespace
         String xaeroDim = ensureCorrectXaeroFormat(dirName, serverDir);
 
         // Build path in server format (matches GenerationCache key format)
         String serverPath;
         if (caveLayer == Integer.MAX_VALUE) {
-            // 地表层：xaero_dim/regionX_regionZ
+            // Surface: xaero_dim/regionX_regionZ
             serverPath = xaeroDim + "/" + regionCoords;
         } else {
-            // 洞穴层：xaero_dim/caves/layer/regionX_regionZ
+            // Caves: xaero_dim/caves/layer/regionX_regionZ
             serverPath = xaeroDim + "/caves/" + caveLayer + "/" + regionCoords;
         }
 
@@ -301,44 +299,44 @@ public class ClientHashManager {
     }
 
     /**
-     * 确保维度名使用正确的 Xaero 格式。
-     * 处理以下情况：
+     * Puts a dimension name into Xaero's form.
+     * The cases:
      * <ul>
-     *   <li>原版维度（null、DIM-1、DIM1）直接返回</li>
-     *   <li>已包含 $ 的正确格式直接返回</li>
-     *   <li>错误的格式尝试从缓存或映射表转换</li>
+     *   <li>vanilla dimensions (null, DIM-1, DIM1) are returned as they are</li>
+     *   <li>a name containing $ is already correct</li>
+     *   <li>anything else is looked up in the cache or the mapping table</li>
      * </ul>
      *
-     * @param dirName 目录名（可能是正确的 Xaero 格式，也可能是错误的）
-     * @param serverDir 服务器目录（用于查找缓存）
-     * @return 正确的 Xaero 格式维度名
+     * @param dirName the directory name, which may or may not be in Xaero's form
+     * @param serverDir the server directory, for the cache lookup
+     * @return the dimension name in Xaero's form
      */
     private static String ensureCorrectXaeroFormat(String dirName, Path serverDir) {
-        // 原版维度直接返回
+        // Vanilla dimensions as they are.
         if (dirName.equals("null") || dirName.equals("DIM-1") || dirName.equals("DIM1")) {
             return dirName;
         }
 
-        // 如果已经包含 $，说明是正确的 namespace$path 格式
+        // A name containing $ is already namespace$path.
         if (dirName.contains("$")) {
             return dirName;
         }
 
-        // 如果是 DIM{id} 格式（传统格式），直接返回
+        // Legacy DIM{id} names are used as they are.
         if (dirName.startsWith("DIM") || dirName.startsWith("DIM-")) {
             return dirName;
         }
 
-        // 尝试从缓存反向查找正确的格式
-        // 缓存键格式：xaeroDim/regionX_regionZ
-        // 我们需要找到包含 dirName 的缓存键
+        // Otherwise search the cache for the full form.
+        // Cache keys look like xaeroDim/regionX_regionZ,
+        // so look for a key whose dimension part matches dirName.
         ClientTimestampCache tsCache = ClientTimestampCache.getInstance(serverDir);
         for (String cacheKey : tsCache.getAll().keySet()) {
             int slashIndex = cacheKey.indexOf('/');
             if (slashIndex > 0) {
                 String cachedDim = cacheKey.substring(0, slashIndex);
-                // 检查缓存中的 xaeroDim 是否匹配 dirName
-                // 缓存中的格式：namespace$path，dirName 可能是 path 部分
+                // Does the cached xaeroDim match dirName?
+                // The cache holds namespace$path; dirName may be just the path.
                 if (cachedDim.contains("$")) {
                     String pathPart = cachedDim.substring(cachedDim.indexOf('$') + 1);
                     if (pathPart.equals(dirName)) {
@@ -349,22 +347,22 @@ public class ClientHashManager {
             }
         }
 
-        // 尝试使用 DimensionPathMapping 转换
-        // 注意：toXaeroDimension 对于没有 namespace 的名字可能无法正确转换
+        // Failing that, try DimensionPathMapping.
+        // Note that toXaeroDimension may not manage it without a namespace.
         String converted = DimensionPathMapping.getInstance().toXaeroDimension(dirName);
         if (!converted.equals(dirName)) {
             LOGGER.info("Converted xaeroDim via mapping: {} -> {}", dirName, converted);
             return converted;
         }
 
-        // 无法转换，返回原始值（可能导致同步问题，但会记录日志）
+        // Nothing worked: return the name unchanged and log it. Syncing may misbehave.
         LOGGER.warn("Could not convert dirName '{}' to correct Xaero format, sync may fail", dirName);
         return dirName;
     }
 
     /**
-     * 关闭共享的 ForkJoinPool。
-     * 在客户端离开服务器或停止时调用，释放资源。
+     * Shuts down the shared ForkJoinPool.
+     * Called when leaving a server or closing the client.
      */
     public static void shutdown() {
         if (!SHARED_POOL.isShutdown()) {

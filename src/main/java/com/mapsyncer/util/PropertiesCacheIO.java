@@ -14,28 +14,28 @@ import java.util.Properties;
 import java.util.function.Function;
 
 /**
- * Properties 格式缓存文件读写工具类
+ * Reads and writes cache files in {@code .properties} format.
  *
- * 统一的缓存文件IO操作，合并 ClientTimestampCache 和 GenerationCache 中的重复实现
- * 支持泛型值类型，通过解析器/格式化器进行转换
+ * Shared by ClientTimestampCache and GenerationCache, which previously each had their own
+ * copy. Values are of any type, converted through a parser and a formatter.
  */
 public final class PropertiesCacheIO {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(PropertiesCacheIO.class);
 
     /**
-     * 私有构造方法，防止实例化
+     * Utility class; not instantiable.
      */
     private PropertiesCacheIO() {
-        // 工具类不允许实例化
+        // Utility class; not instantiable.
     }
 
     /**
-     * 从 Properties 文件加载缓存
+     * Loads a cache from a properties file.
      *
-     * @param cacheFile 缓存文件路径
-     * @param parser 值解析器（字符串 → T）
-     * @return 加载的缓存数据 Map
+     * @param cacheFile the file to read
+     * @param parser converts a stored string into a value
+     * @return the loaded entries, empty if the file is missing or unreadable
      */
     public static <T> Map<String, T> load(Path cacheFile, Function<String, T> parser) {
         Map<String, T> cache = new HashMap<>();
@@ -67,12 +67,12 @@ public final class PropertiesCacheIO {
     }
 
     /**
-     * 保存缓存到 Properties 文件
+     * Writes a cache to a properties file.
      *
-     * @param cacheFile 缓存文件路径
-     * @param cache 缓存数据 Map
-     * @param formatter 值格式化器（T → 字符串）
-     * @param header 文件头注释
+     * @param cacheFile the file to write
+     * @param cache the entries to store
+     * @param formatter converts a value into its stored string
+     * @param header comment written at the top of the file
      */
     public static <T> void save(Path cacheFile, Map<String, T> cache, Function<T, String> formatter, String header) {
         if (cacheFile == null) {
@@ -99,10 +99,10 @@ public final class PropertiesCacheIO {
     }
 
     /**
-     * 解析 "timestamp_seconds:hash" 格式的缓存值
+     * Parses a {@code "timestamp_seconds:hash"} cache value.
      *
-     * @param value 缓存值字符串（如 "1234567890:abc12345"）
-     * @return TimestampHashEntry 对象，解析失败返回 null
+     * @param value the stored string, e.g. {@code "1234567890:abc12345"}
+     * @return the parsed entry, or {@code null} if the string is malformed
      */
     public static TimestampHashEntry parseTimestampHash(String value) {
         if (value == null || value.isEmpty()) {
@@ -122,11 +122,11 @@ public final class PropertiesCacheIO {
     }
 
     /**
-     * 时间戳+哈希缓存条目
+     * One cache entry: a timestamp plus the file's hash.
      */
     public record TimestampHashEntry(long timestampSeconds, String hash) {
         /**
-         * 格式化为缓存字符串
+         * @return this entry as its stored string form
          */
         public String format() {
             return timestampSeconds + ":" + hash;
