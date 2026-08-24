@@ -84,6 +84,11 @@ public class MapSyncerCommand {
                         .then(literal("clearstate")
                                 .requires(source -> false)
                                 .executes(MapSyncerCommand::clearSyncState))
+                        // Anything not handled above belongs to the server: generate,
+                        // status, incremental. Brigadier matches literals before
+                        // arguments, so this only catches what is left over.
+                        .then(argument("serverCommand", StringArgumentType.greedyString())
+                                .executes(MapSyncerCommand::forwardToServer))
         );
         dispatcher.register(
                 literal("mapsyncergui")
@@ -94,6 +99,30 @@ public class MapSyncerCommand {
     private static int openGui(CommandContext<FabricClientCommandSource> context) {
         Minecraft mc = context.getSource().getClient();
         mc.execute(() -> mc.setScreenAndShow(new MapSyncerScreen()));
+        return Command.SINGLE_SUCCESS;
+    }
+
+    /**
+     * Sends a subcommand this client does not handle on to the server.
+     *
+     * <p>The admin subcommands — {@code generate}, {@code status}, {@code incremental} —
+     * live on the server, but this mod registers {@code /mapsyncer} on the client too.
+     * Fabric only passes a command to the server when its own dispatcher does not know the
+     * command name at all; a name it knows with an argument it does not produces
+     * "Incorrect argument for command" locally, and the server never sees it. Forwarding
+     * explicitly is what the admin GUI already does for its own buttons.</p>
+     *
+     * @param context command context
+     * @return the command result
+     */
+    private static int forwardToServer(CommandContext<FabricClientCommandSource> context) {
+        Minecraft mc = context.getSource().getClient();
+        if (mc.player == null || mc.player.connection == null) {
+            return 0;
+        }
+        // getInput() is the command as typed, without the leading slash, which is the
+        // form sendCommand expects.
+        mc.player.connection.sendCommand(context.getInput());
         return Command.SINGLE_SUCCESS;
     }
 
