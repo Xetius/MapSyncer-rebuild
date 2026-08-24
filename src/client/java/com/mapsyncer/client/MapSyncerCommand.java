@@ -16,6 +16,7 @@ import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.commands.CommandBuildContext;
+import net.minecraft.network.protocol.game.ServerboundChatCommandPacket;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.Identifier;
@@ -84,11 +85,20 @@ public class MapSyncerCommand {
                         .then(literal("clearstate")
                                 .requires(source -> false)
                                 .executes(MapSyncerCommand::clearSyncState))
-                        // Anything not handled above belongs to the server: generate,
-                        // status, incremental. Brigadier matches literals before
-                        // arguments, so this only catches what is left over.
-                        .then(argument("serverCommand", StringArgumentType.greedyString())
+                        // The server owns these three; see forwardToServer. They are
+                        // listed one by one rather than caught by a trailing greedy
+                        // argument, which Brigadier reports as ambiguous against every
+                        // literal above it.
+                        .then(literal("generate")
+                                .executes(MapSyncerCommand::forwardToServer)
+                                .then(argument("args", StringArgumentType.greedyString())
+                                        .executes(MapSyncerCommand::forwardToServer)))
+                        .then(literal("status")
                                 .executes(MapSyncerCommand::forwardToServer))
+                        .then(literal("incremental")
+                                .executes(MapSyncerCommand::forwardToServer)
+                                .then(argument("args", StringArgumentType.greedyString())
+                                        .executes(MapSyncerCommand::forwardToServer)))
         );
         dispatcher.register(
                 literal("mapsyncergui")
@@ -116,14 +126,29 @@ public class MapSyncerCommand {
      * @return the command result
      */
     private static int forwardToServer(CommandContext<FabricClientCommandSource> context) {
-        Minecraft mc = context.getSource().getClient();
-        if (mc.player == null || mc.player.connection == null) {
-            return 0;
-        }
-        // getInput() is the command as typed, without the leading slash, which is the
-        // form sendCommand expects.
-        mc.player.connection.sendCommand(context.getInput());
+        // getInput() is the command as typed, without the leading slash.
+        sendToServer(context.getSource().getClient(), context.getInput());
         return Command.SINGLE_SUCCESS;
+    }
+
+    /**
+     * Sends a command straight to the server, bypassing the client dispatcher.
+     *
+     * <p>This deliberately does not call {@code ClientPacketListener#sendCommand}. Fabric's
+     * client command API hooks that method and offers the command to the client dispatcher
+     * first. Because this mod registers {@code /mapsyncer} on the client, calling it from
+     * inside a {@code /mapsyncer} handler re-enters that same handler and recurses until the
+     * client dies with a StackOverflowError. Writing the packet directly is what vanilla
+     * does anyway for a command with no arguments that need signing.</p>
+     *
+     * @param mc      the client
+     * @param command the command to run, without the leading slash
+     */
+    static void sendToServer(Minecraft mc, String command) {
+        if (mc == null || mc.player == null || mc.player.connection == null) {
+            return;
+        }
+        mc.player.connection.send(new ServerboundChatCommandPacket(command));
     }
 
     /**

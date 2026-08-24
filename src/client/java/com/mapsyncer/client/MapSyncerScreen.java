@@ -873,9 +873,9 @@ public class MapSyncerScreen extends Screen {
     }
 
     private void sendServerCommand(String command) {
-        if (minecraft != null && minecraft.player != null && minecraft.player.connection != null) {
-            minecraft.player.connection.sendCommand(command);
-        }
+        // Straight to the server: these are server subcommands, and routing them through
+        // the client dispatcher would re-enter this mod's own /mapsyncer handler.
+        MapSyncerCommand.sendToServer(minecraft, command);
     }
 
     private int panelWidth() {
